@@ -13,3 +13,7 @@ Append-only record of memory changes. Newest at the bottom.
 ## [2026-11-10 20:34] verify | stdlib-only | pyproject.toml fp 079640b1bf52 -> 485488e03467 @ fdcc6c5
 ## [2026-11-10 20:34] add | handoff-claim-once | by agent | src/anchormem/hooks.py#session_start_text
 ## [2026-11-10 20:34] add | promote-dry-run | by agent | src/anchormem/cli.py#cmd_promote
+## [2026-11-10 22:11] confirm | fingerprint-whitespace
+## [2026-11-10 22:34] verify | exit-codes | src/anchormem/cli.py#main fp 0fac88cf4b15 -> fb6c44aa4990 @ 62a092e
+## [2026-11-10 22:34] verify | stdlib-only | pyproject.toml fp 485488e03467 -> 69f3e580fa20 @ 62a092e
+## [2026-11-10 22:35] add | add-stdin-only-when-piped | by agent | src/anchormem/cli.py#_stdin_has_data

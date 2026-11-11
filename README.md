@@ -42,6 +42,13 @@ anchormem add "Pool capped at 10 because of the Postgres plan limit" \
   --body "Hosted plan allows 25 connections across 2 workers. Raise it only after upgrading."
 ```
 
+After that, two commands are all you need day to day:
+
+```bash
+anchormem                      # where things stand, and exactly what to run next
+anchormem dashboard            # opens a page in your browser with everything
+```
+
 To see it catch a change, run the demo. It builds a throwaway repo, changes and renames code, and shows each command's output:
 
 ```bash
@@ -62,6 +69,20 @@ Then restart Claude Code. Two hooks are installed:
 The hooks never fail a session. Any error makes them exit quietly. `anchormem hooks remove` takes them out and leaves the rest of your settings alone.
 
 Other agents (Codex, Cursor and so on) follow the rules `init` writes into `AGENTS.md` and run `anchormem context <file>` themselves.
+
+## The dashboard
+
+```bash
+anchormem dashboard            # writes the page and opens it in your browser
+anchormem dashboard --serve    # a live page that updates by itself as you work (Ctrl+C to stop)
+```
+
+The page starts with **Do this next**: each memory that needs a look, handoffs waiting for you, and memories waiting for your approval. Every step comes with its command and a copy button. Below that:
+- the status of every memory, with a plain explanation of each status,
+- a table of all memories that you can search and filter ("Need a look", "Not approved"),
+- which files have memories, activity over the last 14 days, handoffs, the notes inbox, lint findings, retired memories and the log.
+
+It follows your system's light or dark setting and works on a phone. The page is a single HTML file written to `.anchormem/.state/` (gitignored), or wherever you point `-o`. It opens the browser only for a person at a terminal, never when an agent or script runs it (`--open` / `--no-open` override that). `--serve` listens on 127.0.0.1 only.
 
 ## Anchors
 
@@ -98,10 +119,11 @@ Agents write most memories, and later agents act on them, so anchormem records e
 An agent-written memory is labelled "written by an agent and not yet confirmed by a person" wherever an agent sees it, until a person runs:
 
 ```bash
-anchormem confirm <id>
+anchormem confirm               # or: anchormem confirm <id>
 ```
 
-`confirm` shows the memory and asks for a yes. It refuses when nobody is at the terminal, so an agent can't confirm its own notes. (`--yes` skips the question, for scripts you trust.)
+Run it with no ids to go through every memory waiting for approval, one at a time (y = right, n = skip, q = stop).
+`confirm` shows each memory and asks for a yes. It refuses when nobody is at the terminal, so an agent can't confirm its own notes. (`--yes` skips the question, for scripts you trust.)
 
 ## Confidence
 
@@ -151,16 +173,18 @@ Notes are appended to `.anchormem/inbox.jsonl`. `anchormem promote` groups them 
 | Command | What it does |
 |---|---|
 | `anchormem init [--claude] [--hooks] [--dry-run] [--remove]` | Creates `.anchormem/` and writes the agent rules between marked lines in `AGENTS.md` (and `CLAUDE.md`). Running it again updates the rules in place, and `--remove` takes them out. |
-| `anchormem add "<title>" -a <anchor> [-a …] [--body …] [--id …] [--by user\|agent]` | Saves a memory. Fails if an anchor doesn't point at real code. The body can also be piped in on stdin. |
+| `anchormem add "<title>" -a <anchor> [-a …] [--body …] [--id …] [--by user\|agent]` | Saves a memory. Fails if an anchor doesn't point at real code. The body can also be piped in (`--body -` to force reading stdin). |
 | `anchormem check [ids…] [--json] [-q] [-v]` | Checks every memory against the code. Exits with 1 if anything is stale. |
 | `anchormem context <paths…> [--all] [--budget N] [--json]` | Prints the memories relevant to those files or folders for an agent to read, stale ones first. |
 | `anchormem verify <id…> [--follow]` | Marks memories as still true and records new fingerprints and the current commit. |
-| `anchormem confirm <id…>` | Lets a person confirm memories an agent wrote. |
+| `anchormem confirm [ids…]` | Lets a person approve memories an agent wrote. With no ids, goes through every one waiting. |
 | `anchormem retire <id…> -r <reason> [--superseded-by <id>]` / `restore <id…>` | Retires memories with a reason, or brings them back. |
 | `anchormem feedback <id> applied\|violated\|outdated [--note …]` | Reports whether a memory held up. |
 | `anchormem handoff new\|list\|take …` | Leaves or picks up unfinished work between sessions. |
 | `anchormem note <anchor> "<text>"` / `promote [--apply]` | Jots an observation, and turns repeated ones into memories. |
 | `anchormem lint [--strict] [--json]` | Checks the memories themselves for problems. |
+| `anchormem` / `anchormem status` | Where things stand and what to run next. |
+| `anchormem dashboard [--serve] [-o FILE] [--open\|--no-open]` | Opens a page with what to do next, every memory and its status, activity, handoffs, notes and lint. `--serve` keeps it live. |
 | `anchormem doctor` | Checks the setup: memory files parse, agent rules are current, hooks, PATH, gitignore, git. |
 | `anchormem hooks install\|remove [--local] [--dry-run]` | Installs or removes the Claude Code hooks. |
 | `anchormem list [--retired] [--json]` / `rm <id…>` | Lists or deletes memories. |

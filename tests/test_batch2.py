@@ -1,16 +1,23 @@
 """Tests for confidence/feedback, handoffs and the notes inbox."""
 import datetime as dt
+import io
 import json
+import os
 import sys
+import threading
+import time
 import unittest
+import urllib.request
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from test_anchormem import RepoCase  # noqa: E402
+from test_anchormem import RepoCase, git  # noqa: E402
 
-from anchormem import confidence, handoff, hooks, inbox, store  # noqa: E402
+from anchormem import advice, confidence, dashboard, handoff, hooks, inbox, store  # noqa: E402
+from anchormem.cli import main  # noqa: E402
 from anchormem.lint import lint  # noqa: E402
 
 
@@ -157,6 +164,110 @@ class TestInbox(RepoCase):
     def test_note_rejects_bad_anchor(self):
         code, _, err = self.run_cli("note", "src/db/pool.py#nope", "x")
         self.assertEqual(code, 2)
+
+
+class TestDashboard(RepoCase):
+    def test_dashboard_shows_real_state_and_escapes(self):
+        self.run_cli("init")
+        self.run_cli("add", "Pool <b>capped</b> at 10", "-a", "src/db/pool.py#POOL_SIZE", "-b", "Plan limit.", "--id", "pool")
+        self.run_cli("add", "Rounding", "-a", "src/billing/invoice.ts#lineTotal", "-b", "Per line.", "--id", "round")
+        self.write("src/db/pool.py", "POOL_SIZE = 25\n")
+        self.run_cli("handoff", "new", "Half way", "-f", "README.md")
+        self.run_cli("note", "README.md", "readme note")
+        out = self.root / "dash.html"
+        code, text, _ = self.run_cli("dashboard", "-o", str(out))
+        self.assertEqual(code, 0, text)
+        page = out.read_text()
+        self.assertIn("1 of 2 memories need a look.", page)
+        self.assertIn("anchormem verify pool", page)  # the fix, with a copy button
+        self.assertIn("Pool &lt;b&gt;capped&lt;/b&gt;", page)  # titles are escaped
+        self.assertNotIn("<b>capped</b>", page)
+        self.assertLess(page.index("Pool &lt;b&gt;"), page.index("Rounding"))  # stale first
+        for bit in ("Half way", "readme note", "src/db/pool.py#POOL_SIZE", "add</b> pool"):
+            self.assertIn(bit, page)
+        self.run_cli("dashboard")
+        self.assertTrue((self.root / ".anchormem/.state/dashboard.html").exists())
+
+
+class TestFriendly(RepoCase):
+    def test_status_before_and_after_init(self):
+        code, out, _ = self.run_cli()
+        self.assertEqual(code, 0)
+        self.assertIn("anchormem init", out)
+        self.run_cli("init")
+        _, out, _ = self.run_cli("status")
+        self.assertIn("No memories yet", out)
+        self.assertIn("Save your first memory", out)
+        self.run_cli("add", "Pool capped", "-a", "src/db/pool.py#POOL_SIZE", "-b", "x", "--id", "pool", "--by", "agent")
+        self.write("src/db/pool.py", "POOL_SIZE = 25\n")
+        _, out, _ = self.run_cli()
+        self.assertIn("1 of 1 memories need a look", out)
+        self.assertIn("anchormem verify pool", out)
+        self.assertIn("anchormem confirm", out)
+        self.assertIn("anchormem hooks install", out)
+
+    def test_next_steps_cover_each_status(self):
+        self.run_cli("init")
+        self.run_cli("add", "Pool", "-a", "src/db/pool.py#POOL_SIZE", "-b", "x", "--id", "pool")
+        self.run_cli("add", "Rounding", "-a", "src/billing/invoice.ts#lineTotal", "-b", "x", "--id", "round")
+        self.commit("memories")
+        git(self.root, "mv", "src/billing/invoice.ts", "src/billing/lines.ts")
+        self.write("src/db/pool.py", "OTHER = 1\n")
+        cmds = {st.memory: st.command for st in advice.snapshot(self.root).steps if st.memory}
+        self.assertEqual(cmds["round"], "anchormem verify round --follow")
+        self.assertTrue(cmds["pool"].startswith("anchormem retire pool"))
+
+    def test_confirm_with_no_ids_walks_through_waiting_ones(self):
+        self.run_cli("init")
+        for t in ("One", "Two", "Three"):
+            self.run_cli("add", t, "-a", "README.md", "-b", "x", "--by", "agent")
+        self.run_cli("add", "Mine", "-a", "README.md", "-b", "x", "--by", "user")
+        tty = io.StringIO("y\nn\nq\n")
+        tty.isatty = lambda: True
+        with mock.patch.object(sys, "stdin", tty), mock.patch("builtins.input", lambda prompt="": tty.readline()):
+            code, out, _ = self.run_cli("confirm")
+        self.assertEqual(code, 0)
+        self.assertIn("3 memories written by an agent", out)
+        self.assertIn("(1/3)", out)
+        self.assertIn("stopped", out)
+        waiting = [m.id for m in store.load_all(self.root) if m.unconfirmed_agent]
+        self.assertEqual(len(waiting), 2)
+        self.assertEqual(self.run_cli("confirm", "--yes")[0], 0)
+        _, out, _ = self.run_cli("confirm", "--yes")
+        self.assertIn("Nothing to approve", out)
+
+    def test_add_does_not_wait_on_an_open_empty_pipe(self):
+        self.run_cli("init")
+        r, w = os.pipe()
+        reader = os.fdopen(r)
+        try:
+            with mock.patch.object(sys, "stdin", reader):
+                start = time.time()
+                code, _, _ = self.run_cli("add", "No body", "-a", "README.md")
+            self.assertEqual(code, 0)
+            self.assertLess(time.time() - start, 5)
+        finally:
+            reader.close()
+            os.close(w)
+
+    def test_live_server_rebuilds_on_change(self):
+        self.run_cli("init")
+        self.run_cli("add", "Pool", "-a", "src/db/pool.py#POOL_SIZE", "-b", "x", "--id", "pool")
+        httpd = dashboard.make_server(self.root, 8800)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            get = lambda p: urllib.request.urlopen(base + p, timeout=10).read().decode()
+            page, v1 = get("/"), get("/version")
+            self.assertIn('data-live="1"', page)
+            self.assertIn(f'data-version="{v1}"', page)
+            self.assertEqual(get("/version"), v1)  # stable while nothing changes
+            self.write("src/db/pool.py", "POOL_SIZE = 99\n")
+            self.assertNotEqual(get("/version"), v1)
+            self.assertIn("1 of 1 memories need a look", get("/"))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
 
 
 if __name__ == "__main__":

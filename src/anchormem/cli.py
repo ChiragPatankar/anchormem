@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import __version__, confidence, gitutil, handoff, hooks, inbox, journal, render, store
+from . import __version__, advice, confidence, dashboard, gitutil, handoff, hooks, inbox, journal, render, store
 from .anchors import Anchor, FileMissing, TargetMissing, extract, fingerprint
 from .core import CHANGED, FLAGGED, MISSING, MOVED, OK, UNVERIFIED, check_memory
 from .lint import lint
@@ -194,10 +194,27 @@ def cmd_init(args) -> int:
     return 0
 
 
+def _stdin_has_data(wait: float = 0.3) -> bool:
+    """True when something is being piped in. An open pipe with nothing on it (some agent
+    tools leave stdin like that) must not make `add` wait forever."""
+    stdin = sys.stdin
+    if stdin is None or stdin.isatty():
+        return False
+    try:
+        fd = stdin.fileno()
+    except (AttributeError, OSError, ValueError):
+        return True  # an in-memory stream (tests): reading it can't block
+    try:
+        import select
+        return bool(select.select([fd], [], [], wait)[0])
+    except (OSError, ValueError):
+        return False  # e.g. Windows pipes, where select only takes sockets: use --body - instead
+
+
 def cmd_add(args) -> int:
     root = store.require_root(Path.cwd())
     body = args.body
-    if body is None and not sys.stdin.isatty():
+    if body == "-" or (body is None and _stdin_has_data()):
         body = sys.stdin.read()
     anchors = []
     for text in args.anchor:
@@ -374,24 +391,43 @@ def cmd_confirm(args) -> int:
         err("confirm needs a person at a terminal (agents can't confirm their own memories). Run it yourself, "
             "or pass --yes in a script you trust.")
         return 2
-    for mem_id in args.ids:
+    ids = args.ids or [m.id for m in store.load_all(root) if m.unconfirmed_agent]
+    if not ids:
+        print("Nothing to approve: no memory is waiting for a person's OK.")
+        return 0
+    if not args.ids and not args.yes:
+        print(f"{len(ids)} memories written by an agent are waiting for your OK. "
+              "For each one: y = it's right, n = skip for now, q = stop.\n")
+    done = skipped = 0
+    for k, mem_id in enumerate(ids, 1):
         mem = store.load(root, mem_id)
         if mem.confirmed:
             print(f"{mem_id} was already confirmed on {mem.confirmed}")
             continue
         if not args.yes:
-            print(paint(f"## {mem.title}", BOLD))
+            print(paint(f"({k}/{len(ids)}) {mem.title}", BOLD) if len(ids) > 1 else paint(f"## {mem.title}", BOLD))
             if mem.body:
                 print(mem.body)
             print(paint("anchors: " + ", ".join(str(a) for a, _ in mem.anchors), DIM))
-            answer = input(f"Confirm {mem_id} as correct? [y/N] ").strip().lower()
+            try:
+                answer = input(f"Is {mem_id} correct? [y/n/q] ").strip().lower()
+            except EOFError:
+                answer = "q"
+            if answer in ("q", "quit"):
+                print("stopped")
+                break
             if answer not in ("y", "yes"):
-                print(f"skipped {mem_id}")
+                print(paint(f"skipped {mem_id}", DIM) + "\n")
+                skipped += 1
                 continue
         mem.confirmed = today()
         store.save(root, mem)
         journal.append(root, "confirm", mem_id)
-        print(paint("✓", GREEN) + f" {mem_id} confirmed")
+        print(paint("✓", GREEN) + f" {mem_id} confirmed" + ("\n" if len(ids) > 1 else ""))
+        done += 1
+    if len(ids) > 1:
+        left = sum(1 for m in store.load_all(root) if m.unconfirmed_agent)
+        print(f"approved {done}, skipped {skipped}" + (f"; {left} still waiting (run anchormem confirm again later)" if left else ""))
     return 0
 
 
@@ -666,6 +702,70 @@ def cmd_hooks(args) -> int:
     return _install_hooks(root, args.local, args.action == "remove", args.dry_run)
 
 
+def _should_open(args) -> bool:
+    if args.no_open:
+        return False
+    # open for a person at a terminal; not for agents or scripts
+    return args.open or (sys.stdout.isatty() and not os.environ.get("CLAUDECODE"))
+
+
+def cmd_dashboard(args) -> int:
+    root = store.require_root(Path.cwd())
+    if args.serve:
+        return dashboard.serve(root, args.port, open_browser=_should_open(args))
+    out = Path(args.out).resolve() if args.out else dashboard.default_path(root)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(dashboard.build(root), encoding="utf-8")
+    print(f"wrote {out}")
+    if _should_open(args):
+        import webbrowser
+        webbrowser.open(out.as_uri())
+        print(paint("  opened in your browser. For a page that updates by itself: anchormem dashboard --serve", DIM))
+    else:
+        print(paint(f"  open it in a browser: {out.as_uri()}", DIM))
+    return 0
+
+
+def cmd_status(args) -> int:
+    root = store.find_root(Path.cwd())
+    if root is None:
+        print(paint("anchormem", BOLD) + " keeps notes about your code and tells you when the code they describe changes.")
+        print()
+        print("This folder isn't set up yet. In your project folder, run:")
+        print("  " + paint("anchormem init --hooks", BOLD) + paint("    (--hooks is for Claude Code users)", DIM))
+        print()
+        print(paint("All commands: anchormem --help", DIM))
+        return 0
+    snap = advice.snapshot(root)
+    n, stale = len(snap.mems), snap.stale
+    print(paint(f"anchormem · {root.name}", BOLD))
+    if not n:
+        print("No memories yet.")
+    elif stale:
+        print(paint(f"{len(stale)} of {n} memories need a look.", RED))
+    else:
+        print(paint(f"All {n} memories match the code.", GREEN))
+    extra = []
+    if snap.unconfirmed:
+        extra.append(f"{len(snap.unconfirmed)} not yet approved")
+    if snap.pending:
+        extra.append(f"{len(snap.pending)} handoff waiting")
+    if snap.notes:
+        extra.append(f"{len(snap.notes)} notes in the inbox")
+    if extra:
+        print(paint(" · ".join(extra), DIM))
+    if snap.steps:
+        print()
+        print(paint("Do this next:", BOLD))
+        tag = {"fix": paint("check", RED), "todo": paint("to do", YELLOW), "tip": paint("tip  ", GREEN)}
+        for st in snap.steps:
+            print(f"  {tag[st.level]}  {st.text}")
+            print(f"         {paint(st.command, BOLD)}")
+    print()
+    print(paint("See everything: anchormem dashboard    All commands: anchormem --help", DIM))
+    return 0
+
+
 def cmd_hook(args) -> int:
     return hooks.run(args.kind)
 
@@ -689,7 +789,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("title", help="one-line summary of what is true")
     s.add_argument("--anchor", "-a", action="append", required=True, metavar="ANCHOR",
                    help="path, path#symbol, path#Class.method or path:10-20 (repeatable)")
-    s.add_argument("--body", "-b", help="details (or pipe them on stdin)")
+    s.add_argument("--body", "-b", help="why it matters (or pipe it in; --body - reads stdin)")
     s.add_argument("--id", help="memory id (default: from the title)")
     s.add_argument("--by", choices=store.ORIGINS, help="who wrote it (default: agent inside Claude Code, else user)")
     s.set_defaults(fn=cmd_add)
@@ -719,7 +819,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_verify)
 
     s = sub.add_parser("confirm", help="as a person, confirm memories an agent wrote")
-    s.add_argument("ids", nargs="+")
+    s.add_argument("ids", nargs="*", help="memories to confirm (default: every one waiting for approval)")
     s.add_argument("--yes", "-y", action="store_true", help="don't ask (for scripts you trust)")
     s.set_defaults(fn=cmd_confirm)
 
@@ -777,6 +877,17 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("doctor", help="check that anchormem is set up correctly in this repo")
     s.set_defaults(fn=cmd_doctor)
 
+    s = sub.add_parser("dashboard", help="write an HTML page showing every memory, its status, the log and handoffs")
+    s.add_argument("--out", "-o", metavar="FILE", help="where to write it (default: .anchormem/.state/dashboard.html)")
+    s.add_argument("--serve", action="store_true", help="run a local page that updates by itself (Ctrl+C to stop)")
+    s.add_argument("--port", type=int, default=8765, help="port for --serve (default 8765, next free one if busy)")
+    s.add_argument("--open", action="store_true", help="always open the browser")
+    s.add_argument("--no-open", action="store_true", help="never open the browser")
+    s.set_defaults(fn=cmd_dashboard)
+
+    s = sub.add_parser("status", help="where things stand and what to do next (same as plain `anchormem`)")
+    s.set_defaults(fn=cmd_status)
+
     s = sub.add_parser("hooks", help="install or remove the Claude Code hooks")
     s.add_argument("action", choices=["install", "remove"])
     s.add_argument("--local", action="store_true", help="use .claude/settings.local.json (just you) instead of settings.json")
@@ -801,7 +912,8 @@ def _utf8_streams() -> None:
 
 def main(argv: Optional[List[str]] = None) -> int:
     _utf8_streams()
-    args = build_parser().parse_args(argv)
+    argv = sys.argv[1:] if argv is None else argv
+    args = build_parser().parse_args(argv or ["status"])
     try:
         return args.fn(args)
     except StoreError as e:

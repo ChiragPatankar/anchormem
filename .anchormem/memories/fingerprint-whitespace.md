@@ -2,6 +2,7 @@
 id: fingerprint-whitespace
 title: Fingerprints ignore all whitespace
 origin: agent
+confirmed: 2026-11-10
 created: 2026-11-10
 verified: 2026-11-10
 commit: 81089aa
