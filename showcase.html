@@ -1,0 +1,441 @@
+<title>anchormem</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap">
+<style>
+/* Layout: mission-control poster — header strip, one big live anchor graph, a 4×2 bank of instrument panels, event ticker, marquee. Single dark world by design. */
+:root{
+  --bg:#060a12; --panel:#0a0f1a; --panel2:#0e1524; --line:#1a2435; --faint:#2b3648;
+  --fg:#ece4d3; --dim:#7d8699; --accent:#ff7a1a; --amber:#ffb54d;
+  --stale:#ff4d6a; --ok:#58e0a2;
+  --mono:"JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:12px;line-height:1.45;overflow-x:hidden}
+.wrap{max-width:1200px;margin:0 auto;padding-block:18px 0;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:flex;flex-direction:column;gap:10px}
+.up{text-transform:uppercase;letter-spacing:.08em}
+.dim{color:var(--dim)} .acc{color:var(--accent)} .stale{color:var(--stale)} .ok{color:var(--ok)} .amb{color:var(--amber)}
+
+/* header */
+header{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:18px;align-items:center}
+.brand{background:var(--accent);color:var(--bg);padding:10px 16px;display:flex;flex-direction:column;align-items:center;gap:2px}
+.brand b{font-size:22px;font-weight:800;letter-spacing:.06em}
+.brand small{font-size:9px;font-weight:700;letter-spacing:.18em;text-transform:uppercase}
+.headline{min-width:0}
+.headline h1{margin:0;font-size:15px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;text-wrap:balance}
+.headline p{margin:4px 0 0;color:var(--dim);font-size:10.5px}
+.stats{display:flex;gap:22px}
+.stat{display:flex;flex-direction:column;gap:3px;align-items:flex-start}
+.stat span{font-size:8.5px;color:var(--dim);letter-spacing:.16em;text-transform:uppercase}
+.stat b{font-size:18px;font-weight:700;color:var(--amber);font-variant-numeric:tabular-nums}
+.stat b.s{color:var(--stale)} .stat b.f{color:var(--ok)}
+
+/* bracketed frames */
+.frame{position:relative;border:1px solid var(--line);background-color:var(--panel);
+  --k:var(--accent);
+  background-image:
+   linear-gradient(var(--k),var(--k)),linear-gradient(var(--k),var(--k)),
+   linear-gradient(var(--k),var(--k)),linear-gradient(var(--k),var(--k)),
+   linear-gradient(var(--k),var(--k)),linear-gradient(var(--k),var(--k)),
+   linear-gradient(var(--k),var(--k)),linear-gradient(var(--k),var(--k));
+  background-repeat:no-repeat;
+  background-size:10px 2px,2px 10px,10px 2px,2px 10px,10px 2px,2px 10px,10px 2px,2px 10px;
+  background-position:0 0,0 0,100% 0,100% 0,0 100%,0 100%,100% 100%,100% 100%;
+}
+.ph{display:flex;align-items:center;gap:8px;padding:8px 10px 6px;font-size:9.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;min-width:0}
+.ph .n{background:var(--accent);color:var(--bg);padding:1px 5px;font-size:8.5px}
+.ph .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.ph .tag{margin-left:auto;color:var(--accent);font-size:8.5px;white-space:nowrap}
+.ph .sub{color:var(--dim);font-weight:500;text-transform:none;letter-spacing:0}
+
+/* graph */
+.graph{position:relative}
+.graph canvas{display:block;width:100%}
+.legend{position:absolute;left:14px;top:40px;background:color-mix(in srgb,var(--panel2) 88%,transparent);border:1px solid var(--line);padding:8px 10px;min-width:176px;display:flex;flex-direction:column;gap:5px;font-size:10px}
+.legend .row{display:flex;align-items:center;gap:7px}
+.legend .row i{width:7px;height:7px;border-radius:50%;flex:none}
+.legend .row em{font-style:normal;margin-left:auto;color:var(--amber);font-variant-numeric:tabular-nums}
+.legend .key{display:flex;gap:12px;margin-top:4px;padding-top:6px;border-top:1px solid var(--line);color:var(--dim);font-size:9px}
+.legend .key span{display:flex;align-items:center;gap:5px}
+.legend .key i{width:7px;height:7px;flex:none}
+
+/* panels */
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.panel{min-width:0;display:flex;flex-direction:column}
+.pb{height:128px;margin:0 10px 10px;background:var(--panel2);border:1px solid var(--line);padding:8px 9px;overflow:hidden;font-size:10px;min-width:0}
+.log{display:flex;flex-direction:column;justify-content:flex-end;gap:1px}
+.log div,.code div{white-space:pre;overflow:hidden;text-overflow:ellipsis}
+.code{display:flex;flex-direction:column;gap:1px}
+.hl{background:color-mix(in srgb,var(--stale) 18%,transparent)}
+.add{color:var(--ok)} .del{color:var(--stale)}
+.bars{display:flex;flex-direction:column;gap:7px;justify-content:center}
+.bar{display:grid;grid-template-columns:74px minmax(0,1fr) 30px;gap:8px;align-items:center;font-size:9.5px}
+.bar .tr{height:7px;background:var(--line)}
+.bar .tr i{display:block;height:100%;transition:width .5s}
+.bar b{text-align:right;font-variant-numeric:tabular-nums;font-weight:500}
+.pb canvas{display:block;width:100%;height:100%}
+.cells{display:grid;grid-template-columns:repeat(12,1fr);gap:3px;align-content:start}
+.cells i{aspect-ratio:1;background:var(--accent);max-width:100%}
+.cells i.st{background:var(--stale)} .cells i.vf{background:var(--ok)}
+.cellfoot{display:flex;justify-content:space-between;margin-top:8px;font-size:9px;color:var(--dim)}
+.cmd .cur{display:inline-block;width:6px;height:11px;background:var(--accent);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+.events{display:flex;gap:14px;align-items:center;padding:7px 10px;font-size:9.5px;min-width:0}
+.events .lab{color:var(--accent);font-weight:700;letter-spacing:.1em;flex:none}
+.events .stream{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--dim);min-width:0;flex:1}
+.events .clock{color:var(--dim);flex:none;font-variant-numeric:tabular-nums}
+
+.marquee{overflow:hidden;border-top:1px solid var(--line);margin-top:6px;padding-block:9px;color:var(--accent);font-size:10px;white-space:nowrap}
+.marquee .track{display:inline-block;animation:scroll 40s linear infinite;padding-left:0}
+.marquee span{margin-right:22px} .marquee .d{color:var(--amber)}
+@keyframes scroll{to{transform:translateX(-50%)}}
+.note{color:var(--dim);font-size:9.5px;text-align:center;padding-block:0 14px}
+
+@media (max-width:1000px){ .grid{grid-template-columns:repeat(2,minmax(0,1fr))} header{grid-template-columns:auto minmax(0,1fr)} .stats{grid-column:1/-1;flex-wrap:wrap;gap:16px} }
+@media (max-width:560px){ .grid{grid-template-columns:minmax(0,1fr)} header{grid-template-columns:minmax(0,1fr)} .brand{align-items:flex-start} .legend{display:none} .graph .ph .sub{display:none} }
+@media (prefers-reduced-motion:reduce){ .marquee .track,.cmd .cur{animation:none} }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="brand"><b>ANCHORMEM</b><small>memory with an expiry date</small></div>
+    <div class="headline">
+      <h1>Your agent's memory knows when it's wrong</h1>
+      <p>every memory points at the code it describes · change the code, the memory gets flagged · plain markdown, no database</p>
+    </div>
+    <div class="stats">
+      <div class="stat"><span>Memories</span><b id="sMem">48</b></div>
+      <div class="stat"><span>Anchors</span><b id="sAnc">0</b></div>
+      <div class="stat"><span>Fresh</span><b class="f" id="sFresh">48</b></div>
+      <div class="stat"><span>Stale</span><b class="s" id="sStale">0</b></div>
+      <div class="stat"><span>Databases</span><b>0</b></div>
+    </div>
+  </header>
+
+  <section class="frame graph" aria-label="Animated graph of memories anchored to code files">
+    <div class="ph"><span class="n">01</span><span class="t">Anchor graph <span class="sub">· sample repo · orange = memory, cream = code file</span></span><span class="tag" id="gTag">48 memories · 34 files</span></div>
+    <div class="legend" id="legend"></div>
+    <canvas id="g" aria-hidden="true"></canvas>
+  </section>
+
+  <section class="grid">
+    <div class="frame panel"><div class="ph"><span class="n">02</span><span class="t">Anchor status</span><span class="tag">live</span></div>
+      <div class="pb bars" id="bars"></div></div>
+    <div class="frame panel"><div class="ph"><span class="n">03</span><span class="t">Stale memories</span><span class="tag">last 40 s</span></div>
+      <div class="pb"><canvas id="chart"></canvas></div></div>
+    <div class="frame panel"><div class="ph"><span class="n">04</span><span class="t">anchormem check</span><span class="tag" id="exitTag">exit 0</span></div>
+      <div class="pb log" id="check"></div></div>
+    <div class="frame panel"><div class="ph"><span class="n">05</span><span class="t" id="memName">memory file</span><span class="tag">markdown</span></div>
+      <div class="pb code" id="memfile"></div></div>
+    <div class="frame panel"><div class="ph"><span class="n">06</span><span class="t">The diff that broke it</span><span class="tag" id="diffTag">—</span></div>
+      <div class="pb code" id="diff"></div></div>
+    <div class="frame panel"><div class="ph"><span class="n">07</span><span class="t">Context for the agent</span><span class="tag">before edit</span></div>
+      <div class="pb code" id="ctx"></div></div>
+    <div class="frame panel"><div class="ph"><span class="n">08</span><span class="t">One command</span><span class="tag">setup</span></div>
+      <div class="pb code cmd" id="cmd"></div></div>
+    <div class="frame panel"><div class="ph"><span class="n">09</span><span class="t">Freshness · 48 memories</span><span class="tag" id="gridTag">stale 0/48</span></div>
+      <div class="pb"><div class="cells" id="cells"></div>
+        <div class="cellfoot"><span>■ <span class="acc">fresh</span> ■ <span class="stale">stale</span> ■ <span class="ok">re-verified</span></span><span id="oldest">oldest check 27d</span></div></div></div>
+  </section>
+
+  <div class="frame events"><span class="lab">EVENTS</span><span class="stream" id="events">waiting for the first commit…</span><span class="clock" id="clock">t+0.0s</span></div>
+
+  <div class="marquee" aria-hidden="true"><div class="track" id="track"></div></div>
+  <p class="note">Concept demo with sample data. The graph, files and commits are illustrative, not from a real repository.</p>
+</div>
+
+<script>
+(() => {
+const css = getComputedStyle(document.documentElement);
+const V = k => css.getPropertyValue(k).trim();
+const COL = {bg:V('--bg'),panel2:V('--panel2'),line:V('--line'),fg:V('--fg'),dim:V('--dim'),accent:V('--accent'),amber:V('--amber'),stale:V('--stale'),ok:V('--ok')};
+const rgba = (hex,a) => { const n = parseInt(hex.replace('#',''),16); return `rgba(${n>>16&255},${n>>8&255},${n&255},${a})`; };
+const RM = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const FONT = '"JetBrains Mono", ui-monospace, Menlo, monospace';
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+// seeded rng so the graph is the same on every load
+let seed = 20261110;
+const rng = () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+const gauss = () => { let u = 0, v = 0; while (!u) u = rng(); while (!v) v = rng(); return Math.sqrt(-2*Math.log(u)) * Math.cos(2*Math.PI*v); };
+const pick = a => a[Math.floor(rng()*a.length)];
+
+const CLUSTERS = [
+  {key:'auth',    label:'src/auth',    files:6, mems:10, tint:COL.accent},
+  {key:'billing', label:'src/billing', files:6, mems:9,  tint:COL.amber},
+  {key:'db',      label:'src/db',      files:4, mems:7,  tint:COL.fg},
+  {key:'api',     label:'src/api',     files:7, mems:9,  tint:COL.accent},
+  {key:'tests',   label:'tests',       files:8, mems:6,  tint:COL.fg},
+  {key:'config',  label:'config',      files:3, mems:7,  tint:COL.amber},
+];
+const CL = {}; CLUSTERS.forEach(c => CL[c.key] = c);
+
+const SCEN = [
+  {cluster:'auth', id:'refresh-in-middleware', title:'Token refresh runs in middleware, not the client', anchor:'src/auth/session.py#refresh_token', status:'CHANGED', commit:'4f2a9c1', fp:'9c1e04b7a2d3', now:'3b7f10e2c9aa', when:'2026-11-03',
+   body:'The web client never refreshes tokens itself. Moving this breaks mobile sessions.', sibling:'Sessions expire after 30 min idle',
+   diff:[['@@','@@ src/auth/session.py @@'],[' ','  @requires_session'],['-','- def refresh_token(sess):'],['+','+ def refresh_token(sess, *, force=False):'],['+','+     if force or sess.expires_in < 60:'],[' ','      return _issue(sess.user)']]},
+  {cluster:'billing', id:'invoice-rounding', title:'Invoices round per line item, then total', anchor:'src/billing/invoice.ts#lineTotal', status:'CHANGED', commit:'b81d07e', fp:'e04a6c19f2b0', now:'71c3d8a04e5f', when:'2026-10-21',
+   body:'Finance reconciles per line. Rounding only the total drifts by a cent on big orders.', sibling:'Tax is computed after discounts',
+   diff:[['@@','@@ src/billing/invoice.ts @@'],[' ','  export function lineTotal(qty, price) {'],['-','-   return Math.round(qty * price * 100) / 100'],['+','+   return roundHalfEven(qty * price, 2)'],[' ','  }']]},
+  {cluster:'db', id:'pool-size-why', title:'Pool capped at 10 because of the Postgres plan limit', anchor:'src/db/pool.py#POOL_SIZE', status:'CHANGED', commit:'2c9e4f8', fp:'5a0d2e7b13c4', now:'c48f1a9e0b27', when:'2026-10-02',
+   body:'Hosted plan allows 25 connections across 2 workers. Raise it only after upgrading.', sibling:'Migrations run outside the pool',
+   diff:[['@@','@@ src/db/pool.py @@'],['-','- POOL_SIZE = 10'],['+','+ POOL_SIZE = int(os.getenv("POOL_SIZE", 25))'],[' ','  pool = create_pool(size=POOL_SIZE)']]},
+  {cluster:'api', id:'rate-limit-order', title:'Rate limiter must run before auth', anchor:'src/api/app.ts#buildMiddleware', status:'MOVED', commit:'d3a61b0', fp:'0f7c3b2e98d1', now:'src/api/middleware/index.ts', when:'2026-09-28',
+   body:'Unauthenticated floods hit the DB if auth runs first. Keep limiter at the top of the chain.', sibling:'All routes return JSON errors',
+   diff:[['@@','rename detected (git -M)'],['R','R  src/api/app.ts'],['R','→  src/api/middleware/index.ts'],[' ',' '],[' ','  symbol buildMiddleware found in new path'],[' ','  run: anchormem verify --follow']]},
+  {cluster:'tests', id:'frozen-clock', title:'Tests freeze time with the fake_clock fixture', anchor:'tests/conftest.py#fake_clock', status:'MISSING', commit:'7e05c2a', fp:'b2e9d40c6a18', now:'—', when:'2026-09-14',
+   body:'Expiry tests are flaky on CI without it. Use fake_clock, never time.sleep.', sibling:'Integration tests need a running Redis',
+   diff:[['@@','@@ tests/conftest.py @@'],['-','- @pytest.fixture'],['-','- def fake_clock(monkeypatch):'],['-','-     monkeypatch.setattr(time, "time", _now)'],[' ',' '],[' ','  symbol not found anywhere in repo']]},
+  {cluster:'config', id:'env-precedence', title:'CLI flags override .env, which overrides defaults', anchor:'src/config.py#load_settings', status:'CHANGED', commit:'91b4e3d', fp:'6d1f0a3c7e92', now:'a0e7b5d21c46', when:'2026-10-30',
+   body:'Support docs promise this order. Change the docs too if it changes.', sibling:'Secrets are never read from config files',
+   diff:[['@@','@@ src/config.py @@'],[' ','  def load_settings(argv):'],['-','-     return merge(DEFAULTS, dotenv(), flags(argv))'],['+','+     return merge(DEFAULTS, flags(argv), dotenv())']]},
+];
+
+// ---------- build graph ----------
+const files = [], mems = [], anchors = [], hubEdges = [], dust = [], dustEdges = [];
+const hub = {x:0,y:0,z:0};
+CLUSTERS.forEach((c, i) => {
+  const a = i / CLUSTERS.length * Math.PI * 2 + 0.3;
+  c.cx = Math.cos(a) * .68; c.cz = Math.sin(a) * .68; c.cy = (i % 2 ? .24 : -.22) + (rng() - .5) * .12;
+  c.fileNodes = []; c.memNodes = []; c.dust = [];
+  for (let k = 0; k < c.files; k++) { const n = {x:c.cx+gauss()*.1, y:c.cy+gauss()*.1, z:c.cz+gauss()*.1, c, mems:[], flash:-1e9}; files.push(n); c.fileNodes.push(n); hubEdges.push([hub, n]); }
+  for (let k = 0; k < c.mems; k++) { const n = {x:c.cx+gauss()*.16, y:c.cy+gauss()*.16, z:c.cz+gauss()*.16, c, state:'ok', t:0, age:Math.floor(rng()*28)}; mems.push(n); c.memNodes.push(n); }
+  for (let k = 0; k < 120; k++) { const n = {x:c.cx+gauss()*.27, y:c.cy+gauss()*.22, z:c.cz+gauss()*.27, tint:c.tint, s:rng()}; dust.push(n); c.dust.push(n); }
+});
+CLUSTERS.forEach(c => {
+  c.memNodes.forEach(m => {
+    const n = 1 + (rng() < .6) + (rng() < .3);
+    const pool = c.fileNodes.slice();
+    for (let k = 0; k < n && pool.length; k++) { const f = pool.splice(Math.floor(rng()*pool.length),1)[0]; anchors.push([m, f]); f.mems.push(m); }
+    if (rng() < .14) { const f = pick(pick(CLUSTERS.filter(o => o !== c)).fileNodes); anchors.push([m, f]); f.mems.push(m); }
+  });
+  c.dust.forEach(d => { if (rng() < .55) dustEdges.push([d, pick(c.dust)]); });
+});
+for (let k = 0; k < 300; k++) { const r = 1.15 * Math.cbrt(rng()), th = rng()*Math.PI*2, ph = Math.acos(2*rng()-1); dust.push({x:r*Math.sin(ph)*Math.cos(th), y:r*Math.cos(ph)*.7, z:r*Math.sin(ph)*Math.sin(th), tint:COL.fg, s:rng()*.6}); }
+const NODES = dust.length + files.length + mems.length + 1;
+const EDGES = anchors.length + hubEdges.length + dustEdges.length;
+$('sAnc').textContent = anchors.length;
+$('gTag').textContent = `${mems.length} memories · ${files.length} files · ${anchors.length} anchors`;
+
+$('legend').innerHTML = CLUSTERS.map(c => `<div class="row"><i style="background:${c.tint}"></i>${c.label}<em>${c.mems}</em></div>`).join('') +
+  `<div class="key"><span><i style="background:${COL.accent}"></i>memory</span><span><i style="background:${COL.fg}"></i>file</span><span><i style="background:${COL.stale}"></i>stale</span></div>`;
+
+// ---------- canvas ----------
+const cv = $('g'), ctx = cv.getContext('2d');
+let W = 0, H = 0, DPR = 1, yaw = 0.6, pitch = 0.34;
+function size() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  W = cv.parentElement.clientWidth - 2;
+  H = Math.round(W < 560 ? W * 1.15 : W * 0.64);
+  cv.width = W * DPR; cv.height = H * DPR; cv.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  // legend box in canvas coordinates, so the graph sits beside it and labels avoid it
+  const lg = $('legend');
+  LEG = lg.offsetParent && getComputedStyle(lg).display !== 'none'
+    ? {x:lg.offsetLeft - cv.offsetLeft, y:lg.offsetTop - cv.offsetTop, w:lg.offsetWidth, h:lg.offsetHeight} : null;
+  CX = LEG ? W/2 + Math.min(90, LEG.w * .45) : W/2;
+}
+let LEG = null, CX = 0;
+const inLegend = (x, y, w, h) => LEG && x < LEG.x + LEG.w + 8 && x + w > LEG.x - 8 && y < LEG.y + LEG.h + 8 && y + h > LEG.y - 8;
+function project(n) {
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const x = n.x*cy - n.z*sy; let z = n.x*sy + n.z*cy;
+  const cp = Math.cos(pitch), sp = Math.sin(pitch);
+  const y = n.y*cp - z*sp; z = n.y*sp + z*cp;
+  const f = 3 / (3 + z), S = Math.min(W, H*1.25) * .44;
+  n.sx = CX + x*f*S; n.sy = H/2 + y*f*S*.92; n.f = f;
+}
+function rr(x, y, w, h) { ctx.beginPath(); if (ctx.roundRect) ctx.roundRect(x, y, w, h, 2); else ctx.rect(x, y, w, h); }
+
+let active = [];
+function draw(now) {
+  ctx.clearRect(0, 0, W, H);
+  const g = ctx.createRadialGradient(W/2, H/2, 0, W/2, H/2, Math.max(W, H)*.6);
+  g.addColorStop(0, rgba(COL.accent, .07)); g.addColorStop(1, rgba(COL.bg, 0));
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  project(hub); dust.forEach(project); files.forEach(project); mems.forEach(project); CLUSTERS.forEach(c => { c.p = {x:c.cx, y:c.cy - .3, z:c.cz}; project(c.p); });
+
+  ctx.lineWidth = .6; ctx.strokeStyle = rgba(COL.fg, .05); ctx.beginPath();
+  dustEdges.forEach(([a,b]) => { ctx.moveTo(a.sx, a.sy); ctx.lineTo(b.sx, b.sy); }); ctx.stroke();
+  ctx.strokeStyle = rgba(COL.amber, .09); ctx.beginPath();
+  hubEdges.forEach(([a,b]) => { ctx.moveTo(a.sx, a.sy); ctx.lineTo(b.sx, b.sy); }); ctx.stroke();
+  ctx.lineWidth = .8; ctx.strokeStyle = rgba(COL.accent, .32); ctx.beginPath();
+  const hot = [];
+  anchors.forEach(e => { const [m, f] = e; if (m.state === 'stale' && now - f.flash < 6000) hot.push(e); else { ctx.moveTo(m.sx, m.sy); ctx.lineTo(f.sx, f.sy); } }); ctx.stroke();
+  ctx.lineWidth = 1.4; ctx.strokeStyle = rgba(COL.stale, .85); ctx.beginPath();
+  hot.forEach(([m, f]) => { ctx.moveTo(m.sx, m.sy); ctx.lineTo(f.sx, f.sy); }); ctx.stroke();
+  ctx.fillStyle = COL.stale;
+  hot.forEach(([m, f]) => { const t = ((now - f.flash) / 900) % 1; ctx.beginPath(); ctx.arc(f.sx + (m.sx - f.sx)*t, f.sy + (m.sy - f.sy)*t, 1.8, 0, 7); ctx.fill(); });
+
+  dust.forEach(d => { ctx.fillStyle = rgba(d.tint, .25 + d.s*.5); const r = (.6 + d.s*1.3) * d.f; ctx.fillRect(d.sx - r/2, d.sy - r/2, r, r); });
+  files.forEach(f => {
+    const r = 2.8 * f.f;
+    ctx.fillStyle = COL.fg; ctx.beginPath(); ctx.arc(f.sx, f.sy, r, 0, 7); ctx.fill();
+    const k = (now - f.flash) / 1400;
+    if (k >= 0 && k < 1) { ctx.strokeStyle = rgba(COL.stale, 1 - k); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(f.sx, f.sy, r + k*26, 0, 7); ctx.stroke(); }
+  });
+  mems.forEach(m => {
+    if (m.state === 'verify' && now - m.t > 1000) m.state = 'ok';
+    const r = 2.4 * m.f;
+    ctx.fillStyle = m.state === 'stale' ? COL.stale : m.state === 'verify' ? COL.ok : COL.accent;
+    ctx.beginPath(); ctx.arc(m.sx, m.sy, r, 0, 7); ctx.fill();
+    if (m.state === 'stale') { const p = (Math.sin(now/180) + 1) / 2; ctx.strokeStyle = rgba(COL.stale, .35 + p*.4); ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(m.sx, m.sy, r + 3 + p*2, 0, 7); ctx.stroke(); }
+    if (m.state === 'verify') { const k = (now - m.t) / 1000; ctx.strokeStyle = rgba(COL.ok, 1 - k); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(m.sx, m.sy, r + k*14, 0, 7); ctx.stroke(); }
+  });
+
+  // hub
+  ctx.fillStyle = rgba(COL.accent, .18); ctx.beginPath(); ctx.arc(hub.sx, hub.sy, 16, 0, 7); ctx.fill();
+  ctx.fillStyle = COL.accent; ctx.beginPath(); ctx.arc(hub.sx, hub.sy, 10, 0, 7); ctx.fill();
+  ctx.fillStyle = COL.bg; ctx.font = `800 11px ${FONT}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText('A', hub.sx, hub.sy + .5);
+  ctx.fillStyle = COL.dim; ctx.font = `500 9px ${FONT}`; ctx.fillText('anchormem · one repo, one memory', hub.sx, hub.sy + 26);
+
+  // cluster tags
+  ctx.font = `500 9.5px ${FONT}`;
+  CLUSTERS.forEach(c => {
+    const w = ctx.measureText(c.label).width + 14, x = c.p.sx - w/2, y = c.p.sy - 9;
+    ctx.globalAlpha = inLegend(x, y, w, 18) ? .15 : 1;
+    ctx.fillStyle = rgba(COL.bg, .82); rr(x, y, w, 18); ctx.fill();
+    ctx.strokeStyle = rgba(c.tint, .8); ctx.lineWidth = 1; rr(x, y, w, 18); ctx.stroke();
+    ctx.fillStyle = COL.fg; ctx.fillText(c.label, c.p.sx, c.p.sy + .5);
+  });
+  ctx.globalAlpha = 1;
+
+  // tooltip for newest stale memory
+  const ev = active[active.length - 1];
+  if (ev) {
+    const m = ev.mem, sc = ev.sc;
+    const lines = [[`STALE · ${sc.status}`, COL.stale, 700], [sc.title.length > 40 ? sc.title.slice(0, 39) + '…' : sc.title, COL.fg, 500], [sc.anchor, COL.dim, 400], [sc.status === 'MOVED' ? `→ ${sc.now}` : `since ${sc.commit} · verified ${sc.when.slice(5)}`, COL.dim, 400]];
+    ctx.font = `500 10px ${FONT}`;
+    const w = Math.min(W - 20, Math.max(...lines.map(l => ctx.measureText(l[0]).width)) + 20), h = 70;
+    let x = m.sx + 18, y = m.sy - h - 14;
+    if (x + w > W - 8) x = m.sx - w - 18; if (x < 8) x = 8; if (y < 8) y = m.sy + 16; if (y + h > H - 24) y = H - h - 24;
+    ctx.strokeStyle = rgba(COL.stale, .7); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(m.sx, m.sy); ctx.lineTo(x + (x > m.sx ? 0 : w), y + h/2); ctx.stroke();
+    ctx.fillStyle = rgba(COL.panel2, .95); rr(x, y, w, h); ctx.fill(); ctx.strokeStyle = rgba(COL.stale, .6); rr(x, y, w, h); ctx.stroke();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    lines.forEach((l, i) => { ctx.font = `${l[2]} ${i === 1 ? 10.5 : 9.5}px ${FONT}`; ctx.fillStyle = l[1]; ctx.fillText(l[0], x + 10, y + 9 + i*14); });
+  }
+
+  ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic'; ctx.font = `400 9px ${FONT}`; ctx.fillStyle = COL.dim;
+  ctx.fillText(`yaw ${((yaw*180/Math.PI)%360).toFixed(1)}° · pitch ${(pitch*180/Math.PI).toFixed(1)}° · ${NODES.toLocaleString()} nodes · ${EDGES.toLocaleString()} edges`, W - 12, H - 12);
+}
+
+// ---------- panels ----------
+const T0 = performance.now();
+const staleMems = () => mems.filter(m => m.state === 'stale').length;
+function setStats() {
+  const s = staleMems();
+  $('sStale').textContent = s; $('sFresh').textContent = mems.length - s;
+  $('gridTag').textContent = `stale ${s}/${mems.length}`;
+  $('exitTag').textContent = s ? 'exit 1' : 'exit 0'; $('exitTag').style.color = s ? COL.stale : COL.ok;
+  const st = {CHANGED:0, MOVED:0, MISSING:0};
+  active.forEach(ev => anchors.forEach(([m, f]) => { if (f === ev.file && m.state === 'stale') st[ev.sc.status]++; }));
+  const bad = st.CHANGED + st.MOVED + st.MISSING, rows = [['ok', anchors.length - bad - 2, COL.accent], ['changed', st.CHANGED, COL.stale], ['moved', st.MOVED, COL.amber], ['missing', st.MISSING, COL.stale], ['unverified', 2, COL.dim]];
+  $('bars').innerHTML = rows.map(([l, v, c]) => `<div class="bar"><span class="up dim">${l}</span><span class="tr"><i style="width:${Math.max(v ? 3 : 0, v / anchors.length * 100)}%;background:${c}"></i></span><b>${v}</b></div>`).join('');
+  $('cells').innerHTML = mems.map(m => `<i class="${m.state === 'stale' ? 'st' : m.state === 'verify' ? 'vf' : ''}" style="opacity:${m.state === 'ok' ? (1 - m.age/40).toFixed(2) : 1}"></i>`).join('');
+}
+const checkLines = [];
+function log(html) { checkLines.push(html); while (checkLines.length > 8) checkLines.shift(); $('check').innerHTML = checkLines.map(l => `<div>${l}</div>`).join(''); }
+log('<span class="dim">$ anchormem check</span>');
+['api-errors-json', 'tax-after-discount', 'migrations-outside-pool', 'secrets-not-in-config'].forEach(id => log(`<span class="ok">✓</span> <span class="dim">${id}</span>`));
+
+function showMem(sc) {
+  $('memName').textContent = `.anchormem/memories/${sc.id}.md`;
+  const fpLine = sc.status === 'MOVED' ? `  - ${sc.anchor}  # fp:${sc.fp}` : `  - ${sc.anchor}  # fp:${sc.fp}`;
+  const cur = sc.status === 'CHANGED' ? `<span class="stale">    ↳ now fp:${sc.now}</span>` : sc.status === 'MOVED' ? `<span class="amb">    ↳ moved to ${sc.now}</span>` : `<span class="stale">    ↳ symbol not found</span>`;
+  $('memfile').innerHTML = [`<span class="dim">---</span>`, `<span class="acc">id:</span> ${sc.id}`, `<span class="acc">title:</span> ${esc(sc.title)}`, `<span class="acc">verified:</span> ${sc.when} @ ${sc.commit}`, `<span class="acc">anchors:</span>`, `<span class="hl">${esc(fpLine)}</span>`, cur, `<span class="dim">---</span>`, esc(sc.body)].map(l => `<div>${l}</div>`).join('');
+}
+function showDiff(sc) {
+  $('diffTag').textContent = sc.status === 'MOVED' ? 'rename' : `${sc.commit}..HEAD`;
+  $('diff').innerHTML = sc.diff.map(([k, t]) => `<div class="${k === '+' ? 'add' : k === '-' ? 'del' : k === '@@' ? 'dim' : k === 'R' ? 'amb' : ''}">${esc(t)}</div>`).join('');
+}
+function showCtx(sc) {
+  const file = sc.anchor.split('#')[0];
+  $('ctx').innerHTML = [`<span class="dim">$ anchormem context ${esc(file)}</span>`, `<span class="acc">##</span> ${esc(sc.title)}`, `   <span class="stale">[STALE: ${sc.status}]</span> <span class="dim">check the code first</span>`, `   <span class="dim">${esc(sc.body.split('.')[0])}.</span>`, `<span class="acc">##</span> ${esc(sc.sibling)}`, `   <span class="ok">[OK]</span> <span class="dim">verified ${sc.when}</span>`].map(l => `<div>${l}</div>`).join('');
+}
+const evs = [];
+function event(o) { evs.unshift(JSON.stringify(o)); evs.length = Math.min(evs.length, 4); $('events').textContent = evs.join('  '); }
+
+let evIdx = 0;
+function fire() {
+  if (active.length >= 2) return;
+  const sc = SCEN[evIdx++ % SCEN.length], c = CL[sc.cluster];
+  const cand = c.fileNodes.filter(f => f.mems.length && !active.some(a => a.file === f));
+  if (!cand.length) return;
+  // a typical commit touches code behind one to three memories
+  const file = cand.reduce((a, b) => Math.abs(b.mems.length - 2) < Math.abs(a.mems.length - 2) ? b : a), now = performance.now();
+  const keep = file.mems.slice(0, 3);
+  file.flash = now; keep.forEach(m => { m.state = 'stale'; m.t = now; });
+  const ev = {sc, file, mem:file.mems[0], t:now}; active.push(ev);
+  log(`<span class="stale">✗</span> ${sc.id} <span class="stale">${sc.status}</span> <span class="dim">${sc.anchor}</span>`);
+  showMem(sc); showDiff(sc); showCtx(sc);
+  event({event:'stale', memory:sc.id, anchor:sc.anchor, status:sc.status.toLowerCase(), since:sc.commit});
+  setStats();
+  if (!RM) setTimeout(() => verify(ev), 5000);
+}
+function verify(ev) {
+  const now = performance.now();
+  ev.file.mems.forEach(m => { if (m.state === 'stale') { m.state = 'verify'; m.t = now; m.age = 0; } });
+  active = active.filter(a => a !== ev);
+  log(`<span class="ok">✓</span> ${ev.sc.id} <span class="ok">re-verified</span> <span class="dim">@ HEAD</span>`);
+  event({event:'verified', memory:ev.sc.id, by:'agent', at:'HEAD'});
+  setStats(); setTimeout(setStats, 1100);
+}
+
+// stale chart
+const series = new Array(40).fill(0);
+const ch = $('chart'), cx2 = ch.getContext('2d');
+function drawChart() {
+  const w = ch.clientWidth, h = ch.clientHeight; if (!w || !h) return;
+  ch.width = w * DPR; ch.height = h * DPR; cx2.setTransform(DPR, 0, 0, DPR, 0, 0); cx2.clearRect(0, 0, w, h);
+  const top = Math.max(8, Math.ceil(Math.max(...series) / 4) * 4), L = 18, B = h - 14, Tp = 4, R = w - 6;
+  const X = i => L + (R - L) * i / (series.length - 1), Y = v => B - (B - Tp) * v / top;
+  cx2.font = `400 8.5px ${FONT}`; cx2.fillStyle = COL.dim; cx2.textAlign = 'right'; cx2.textBaseline = 'middle';
+  for (let v = 0; v <= top; v += top / 4) { cx2.strokeStyle = rgba(COL.fg, .07); cx2.beginPath(); cx2.moveTo(L, Y(v)); cx2.lineTo(R, Y(v)); cx2.stroke(); cx2.fillText(v, L - 4, Y(v)); }
+  cx2.beginPath(); series.forEach((v, i) => i ? cx2.lineTo(X(i), Y(v)) : cx2.moveTo(X(i), Y(v)));
+  cx2.strokeStyle = COL.accent; cx2.lineWidth = 1.4; cx2.stroke();
+  cx2.lineTo(R, B); cx2.lineTo(L, B); cx2.closePath();
+  const gr = cx2.createLinearGradient(0, Tp, 0, B); gr.addColorStop(0, rgba(COL.accent, .45)); gr.addColorStop(1, rgba(COL.accent, 0)); cx2.fillStyle = gr; cx2.fill();
+  const lv = series[series.length - 1]; cx2.fillStyle = lv ? COL.stale : COL.ok; cx2.beginPath(); cx2.arc(R, Y(lv), 3, 0, 7); cx2.fill();
+  cx2.textAlign = 'left'; cx2.textBaseline = 'alphabetic'; cx2.fillStyle = COL.dim; cx2.fillText(`now ${lv} stale · max ${Math.max(...series)}`, L, h - 2);
+}
+
+// one-command typing
+const CMD = [['$ anchormem init', ''], ['created .anchormem/memories/', 'dim'], ['added agent rules to AGENTS.md', 'dim'], ['$ anchormem add "Pool capped at 10" \\', ''], ['    --anchor src/db/pool.py#POOL_SIZE', ''], ['saved pool-size-why · 1 anchor · fp 5a0d2e7b', 'ok']];
+function renderCmd(lineIdx, chars) {
+  $('cmd').innerHTML = CMD.map(([t, c], i) => { if (i > lineIdx) return ''; const s = i < lineIdx ? t : t.slice(0, chars); return `<div class="${c}">${esc(s)}${i === lineIdx ? '<span class="cur"></span>' : ''}</div>`; }).join('');
+}
+function typeLoop() {
+  let li = 0, ci = 0;
+  const step = () => {
+    const [t] = CMD[li];
+    if (t.startsWith('$') || t.startsWith('    ')) { ci++; renderCmd(li, ci); if (ci < t.length) return setTimeout(step, 45); }
+    else renderCmd(li, t.length);
+    li++; ci = 0;
+    if (li < CMD.length) return setTimeout(step, 350);
+    setTimeout(typeLoop, 3200);
+  };
+  step();
+}
+
+$('track').innerHTML = (() => { const items = ['memory that knows when it\'s wrong', 'anchored to code', 'flagged on change', 'plain markdown', 'no database', 'runs in CI', 'works with any coding agent', 'anchormem check', 'anchormem context', 'anchormem verify']; const one = items.map(s => `<span>${s}</span><span class="d">◆</span>`).join(''); return one + one; })();
+
+// ---------- run ----------
+size(); setStats();
+new ResizeObserver(() => { size(); drawChart(); if (RM) draw(performance.now()); }).observe(cv.parentElement);
+if (RM) {
+  fire(); series.fill(0); series[series.length - 1] = staleMems(); drawChart(); renderCmd(CMD.length - 1, 99); draw(performance.now());
+} else {
+  let last = performance.now();
+  const loop = now => { yaw += (now - last) * .00011; pitch = .34 + Math.sin(now * .00017) * .07; last = now; draw(now); $('clock').textContent = `t+${((now - T0)/1000).toFixed(1)}s`; requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+  setTimeout(fire, 900); setInterval(fire, 4200);
+  setInterval(() => { series.push(staleMems()); series.shift(); drawChart(); }, 1000);
+  drawChart(); typeLoop();
+}
+document.fonts && document.fonts.ready.then(() => drawChart());
+})();
+</script>

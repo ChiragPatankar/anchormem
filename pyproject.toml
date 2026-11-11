@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anchormem"
+version = "0.1.0"
+description = "Agent memory anchored to code: memories get flagged when the code they describe changes."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+keywords = ["ai-agents", "memory", "claude-code", "codex", "cursor", "developer-tools"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Environment :: Console",
+  "Topic :: Software Development",
+]
+
+[project.scripts]
+anchormem = "anchormem.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
