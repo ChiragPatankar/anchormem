@@ -27,9 +27,12 @@ from .anchors import Anchor
 
 DIR = ".anchormem"
 MEM_DIR = f"{DIR}/memories"
+RETIRED_DIR = f"{DIR}/retired"
+STATE_DIR = f"{DIR}/.state"
 _FP = re.compile(r"\s+#\s*fp:([0-9a-f]{6,64})\s*$")
 _KEY = re.compile(r"^([A-Za-z_][\w-]*):\s*(.*)$")
-ORDER = ["id", "title", "created", "verified", "commit"]
+ORDER = ["id", "title", "origin", "confirmed", "created", "verified", "commit"]
+ORIGINS = ("user", "agent")
 
 
 class StoreError(Exception):
@@ -45,12 +48,18 @@ class Memory:
     created: str = ""
     verified: str = ""
     commit: str = ""
+    origin: str = ""      # "user" or "agent": who wrote it
+    confirmed: str = ""   # date a person confirmed an agent-written memory
     extra: Dict[str, str] = field(default_factory=dict)
     path: Optional[Path] = None
 
+    @property
+    def unconfirmed_agent(self) -> bool:
+        return self.origin == "agent" and not self.confirmed
+
     def to_text(self) -> str:
-        vals = {"id": self.id, "title": self.title, "created": self.created,
-                "verified": self.verified, "commit": self.commit}
+        vals = {"id": self.id, "title": self.title, "origin": self.origin, "confirmed": self.confirmed,
+                "created": self.created, "verified": self.verified, "commit": self.commit}
         lines = ["---"]
         lines += [f"{k}: {vals[k]}" for k in ORDER if vals[k]]
         lines += [f"{k}: {v}" for k, v in self.extra.items()]
@@ -98,7 +107,8 @@ def parse(text: str, path: Optional[Path] = None) -> Memory:
     known = {k: vals.pop(k, "") for k in ORDER}
     return Memory(id=known["id"], title=known["title"] or known["id"], body="\n".join(lines[close + 1:]).strip(),
                   anchors=anchors, created=known["created"], verified=known["verified"],
-                  commit=known["commit"], extra=vals, path=path)
+                  commit=known["commit"], origin=known["origin"], confirmed=known["confirmed"],
+                  extra=vals, path=path)
 
 
 # ---------------------------------------------------------------- repo
@@ -124,28 +134,70 @@ def init_root(start: Path) -> Path:
     return root
 
 
-def load_all(root: Path) -> List[Memory]:
+def load_all(root: Path, folder: str = MEM_DIR) -> List[Memory]:
     mems = []
-    folder = root / MEM_DIR
-    if folder.is_dir():
-        for f in sorted(folder.glob("*.md")):
+    d = root / folder
+    if d.is_dir():
+        for f in sorted(d.glob("*.md")):
             mems.append(parse(f.read_text(encoding="utf-8"), f))
     return mems
 
 
-def load(root: Path, mem_id: str) -> Memory:
-    f = root / MEM_DIR / f"{mem_id}.md"
+def load_retired(root: Path) -> List[Memory]:
+    return load_all(root, RETIRED_DIR)
+
+
+def load(root: Path, mem_id: str, folder: str = MEM_DIR) -> Memory:
+    f = root / folder / f"{mem_id}.md"
     if not f.is_file():
+        if folder == MEM_DIR and (root / RETIRED_DIR / f"{mem_id}.md").is_file():
+            raise StoreError(f"memory {mem_id!r} is retired. Bring it back with `anchormem restore {mem_id}`")
         raise StoreError(f"no memory with id {mem_id!r} (looked for {f.relative_to(root)})")
     return parse(f.read_text(encoding="utf-8"), f)
 
 
-def save(root: Path, mem: Memory) -> Path:
-    f = root / MEM_DIR / f"{mem.id}.md"
+def save(root: Path, mem: Memory, folder: str = MEM_DIR) -> Path:
+    f = root / folder / f"{mem.id}.md"
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(mem.to_text(), encoding="utf-8")
     mem.path = f
     return f
+
+
+def retire(root: Path, mem: Memory, reason: str, when: str, superseded_by: str = "") -> Path:
+    old = mem.path
+    mem.extra["retired"] = when
+    mem.extra["retired_reason"] = reason
+    if superseded_by:
+        mem.extra["superseded_by"] = superseded_by
+    f = save(root, mem, RETIRED_DIR)
+    if old and old.exists() and old.resolve() != f.resolve():
+        old.unlink()
+    return f
+
+
+def restore(root: Path, mem_id: str) -> Memory:
+    mem = load(root, mem_id, RETIRED_DIR)
+    if (root / MEM_DIR / f"{mem_id}.md").exists():
+        raise StoreError(f"an active memory {mem_id!r} already exists")
+    old = mem.path
+    for k in ("retired", "retired_reason", "superseded_by"):
+        mem.extra.pop(k, None)
+    save(root, mem)
+    if old:
+        old.unlink()
+    return mem
+
+
+def ensure_support_files(root: Path) -> List[str]:
+    """Files that keep per-machine state out of git and make the log merge cleanly."""
+    made = []
+    for name, text in ((".gitignore", ".state/\n"), (".gitattributes", "log.md merge=union\n")):
+        f = root / DIR / name
+        if not f.exists():
+            f.write_text(text, encoding="utf-8")
+            made.append(f"{DIR}/{name}")
+    return made
 
 
 _STOP = {"a", "an", "the", "of", "to", "in", "on", "at", "for", "and", "or", "but", "is", "are", "be",

@@ -119,8 +119,10 @@ class TestWorkflow(RepoCase):
         self.assertEqual(self.run_cli("init")[0], 0)
         self.run_cli("init")
         text = (self.root / "AGENTS.md").read_text()
-        self.assertEqual(text.count("<!-- anchormem -->"), 1)
+        self.assertEqual(text.count("<!-- anchormem:begin"), 1)
+        self.assertEqual(text.count("<!-- anchormem:end -->"), 1)
         self.assertTrue((self.root / ".anchormem/memories").is_dir())
+        self.assertTrue((self.root / ".anchormem/.gitignore").is_file())
 
     def test_full_lifecycle(self):
         self.run_cli("init")
