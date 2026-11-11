@@ -177,7 +177,7 @@ class TestDashboard(RepoCase):
         out = self.root / "dash.html"
         code, text, _ = self.run_cli("dashboard", "-o", str(out))
         self.assertEqual(code, 0, text)
-        page = out.read_text()
+        page = out.read_text(encoding="utf-8")
         self.assertIn("1 of 2 memories need a look.", page)
         self.assertIn("anchormem verify pool", page)  # the fix, with a copy button
         self.assertIn("Pool &lt;b&gt;capped&lt;/b&gt;", page)  # titles are escaped
