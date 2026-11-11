@@ -29,6 +29,8 @@ DIR = ".anchormem"
 MEM_DIR = f"{DIR}/memories"
 RETIRED_DIR = f"{DIR}/retired"
 STATE_DIR = f"{DIR}/.state"
+HANDOFF_DIR = f"{DIR}/handoffs"
+INBOX = f"{DIR}/inbox.jsonl"
 _FP = re.compile(r"\s+#\s*fp:([0-9a-f]{6,64})\s*$")
 _KEY = re.compile(r"^([A-Za-z_][\w-]*):\s*(.*)$")
 ORDER = ["id", "title", "origin", "confirmed", "created", "verified", "commit"]
@@ -192,16 +194,19 @@ def restore(root: Path, mem_id: str) -> Memory:
 def ensure_support_files(root: Path) -> List[str]:
     """Files that keep per-machine state out of git and make the log merge cleanly."""
     made = []
-    for name, text in ((".gitignore", ".state/\n"), (".gitattributes", "log.md merge=union\n")):
+    wanted = ((".gitignore", [".state/"]), (".gitattributes", ["log.md merge=union", "inbox.jsonl merge=union"]))
+    for name, lines in wanted:
         f = root / DIR / name
-        if not f.exists():
-            f.write_text(text, encoding="utf-8")
-            made.append(f"{DIR}/{name}")
+        have = f.read_text(encoding="utf-8").splitlines() if f.exists() else []
+        missing = [ln for ln in lines if ln not in have]
+        if missing:
+            f.write_text("\n".join(have + missing) + "\n", encoding="utf-8")
+            made.append(f"{'updated' if have else 'created'} {DIR}/{name}")
     return made
 
 
 _STOP = {"a", "an", "the", "of", "to", "in", "on", "at", "for", "and", "or", "but", "is", "are", "be",
-         "because", "then", "it", "its", "this", "that", "with", "by", "from", "as", "not", "only"}
+         "because", "then", "it", "its", "this", "that", "with", "by", "from", "as"}  # never drop "not"/"no"/"only": they change the meaning
 
 
 def slugify(title: str) -> str:

@@ -10,9 +10,9 @@ import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import __version__, gitutil, hooks, journal, render, store
+from . import __version__, confidence, gitutil, handoff, hooks, inbox, journal, render, store
 from .anchors import Anchor, FileMissing, TargetMissing, extract, fingerprint
-from .core import CHANGED, MISSING, MOVED, OK, UNVERIFIED, check_memory
+from .core import CHANGED, FLAGGED, MISSING, MOVED, OK, UNVERIFIED, check_memory
 from .lint import lint
 from .store import Memory, StoreError
 
@@ -27,7 +27,11 @@ This repo keeps memory for coding agents in `.anchormem/memories/`. Each memory 
 - If a stale memory is still true, run `anchormem verify <id>`. If its code moved, run `anchormem verify <id> --follow`. If it is wrong, edit the file or run `anchormem retire <id> --reason "<why>"`.
 - Memories marked "written by an agent and not yet confirmed" are notes, not rules.
 - When you learn something non-obvious about the code (a decision, a gotcha, a constraint), save it:
-  `anchormem add "<one-line title>" --anchor <path>#<symbol> --body "<why it matters>" --by agent`"""
+  `anchormem add "<one-line title>" --anchor <path>#<symbol> --body "<why it matters>" --by agent`
+- Noticed something but not sure it deserves a memory? `anchormem note <path>#<symbol> "<what you noticed>"`. Notes that keep coming up are offered as memories by `anchormem promote`.
+- After relying on a memory, say how it went: `anchormem feedback <id> applied` (it held), `violated` (the code or user contradicted it), or `outdated --note "<why>"`.
+- At the start of a session, run `anchormem handoff take` to pick up unfinished work (automatic with the Claude Code hooks). If you stop before the task is done, leave one:
+  `anchormem handoff new "<where things stand>" -n "<next step>" -q "<open question>"`"""
 BLOCK = f"{BEGIN}\n{RULES}\n{END}\n"
 
 # the single-marker block written by anchormem 0.1, replaced on the next `init`
@@ -56,7 +60,7 @@ def paint(text: str, code: str) -> str:
 
 RED, GREEN, YELLOW, DIM, BOLD = "31", "32", "33", "2", "1"
 STATUS_STYLE = {OK: ("OK", GREEN), CHANGED: ("CHANGED", RED), MOVED: ("MOVED", YELLOW),
-                MISSING: ("MISSING", RED), UNVERIFIED: ("UNVERIFIED", YELLOW)}
+                MISSING: ("MISSING", RED), UNVERIFIED: ("UNVERIFIED", YELLOW), FLAGGED: ("FLAGGED", YELLOW)}
 
 
 def badge(status: str) -> str:
@@ -164,7 +168,7 @@ def cmd_init(args) -> int:
         root = store.init_root(Path.cwd())
         print(f"{store.MEM_DIR}/ ready in {root}")
         for made in store.ensure_support_files(root):
-            print(f"created {made}")
+            print(made)
     targets = ["AGENTS.md"]
     if args.claude or (root / "CLAUDE.md").exists():
         targets.append("CLAUDE.md")
@@ -241,7 +245,8 @@ def cmd_list(args) -> int:
                   + paint(f"  ({m.extra.get('retired_reason', '')})", DIM))
         else:
             who = paint("  [agent, unconfirmed]", YELLOW) if m.unconfirmed_agent else ""
-            print(f"{m.id.ljust(width)}  {paint(m.verified or '-', DIM)}  {m.title}{who}")
+            conf = confidence.describe(m)
+            print(f"{m.id.ljust(width)}  {paint(m.verified or '-', DIM)}  {m.title}{who}" + (paint(f"  {conf}", DIM) if conf else ""))
     return 0
 
 
@@ -277,6 +282,8 @@ def cmd_check(args) -> int:
                 line += paint(f"  → {a.moved_to[0]}", YELLOW)
             print(line)
             first = False
+        if r.flagged:
+            print(f"  {' ' * width}  {badge(FLAGGED)}  " + paint(f"reported outdated {r.flagged}", DIM))
     n_anchors = sum(len(r.anchors) for r in results)
     if args.quiet and not stale:
         return 0
@@ -286,7 +293,7 @@ def cmd_check(args) -> int:
         hints = []
         if any(a.status == MOVED for r in stale for a in r.anchors):
             hints.append("moved: anchormem verify <id> --follow")
-        if any(a.status in (CHANGED, UNVERIFIED) for r in stale for a in r.anchors):
+        if any(a.status in (CHANGED, UNVERIFIED) for r in stale for a in r.anchors) or any(r.flagged for r in stale):
             hints.append("still true: anchormem verify <id>")
         hints.append('wrong or gone: edit .anchormem/memories/<id>.md or anchormem retire <id> --reason "..."')
         for h in hints:
@@ -350,6 +357,8 @@ def cmd_verify(args) -> int:
                 changes.append(f"{res.anchor} -> {a}")
             elif fp != res.stored_fp:
                 changes.append(f"{a} fp {res.stored_fp or 'none'} -> {fp}")
+        if mem.extra.pop("flagged", None):
+            changes.append("cleared outdated report")
         mem.anchors, mem.verified, mem.commit = new_anchors, today(), gitutil.head(root) or ""
         store.save(root, mem)
         journal.append(root, "verify", mem_id, ("; ".join(changes) or "unchanged") + (f" @ {mem.commit}" if mem.commit else ""))
@@ -465,6 +474,15 @@ def cmd_doctor(args) -> int:
         msg = {"current": "agent rules are current", "outdated": "agent rules are out of date (run anchormem init)",
                "absent": "no agent rules (run anchormem init)"}[st]
         rows.append((level, name, msg))
+    try:
+        pend = [h for h in handoff.load_all(root) if h.status == handoff.PENDING]
+        rows.append(("info" if pend else "ok", "handoffs", f"{len(pend)} pending (anchormem handoff list)" if pend else "none pending"))
+    except StoreError as e:
+        rows.append(("error", "handoffs", str(e)))
+    notes = inbox.load(root)
+    ready = inbox.candidates(notes)
+    rows.append(("info" if ready else "ok", "inbox",
+                 f"{len(notes)} notes, {len(ready)} ready to promote" + (" (anchormem promote)" if ready else "")))
     inst = hooks.installed(root)
     rows.append(("ok" if inst else "info", "claude hooks",
                  "installed in " + ", ".join(str(p.relative_to(root)) for p in inst) if inst
@@ -482,6 +500,123 @@ def cmd_doctor(args) -> int:
     for level, item, msg in rows:
         print(f"{marks[level]} {item.ljust(width)}  {msg}")
     return 1 if any(r[0] == "error" for r in rows) else 0
+
+
+def cmd_feedback(args) -> int:
+    root = store.require_root(Path.cwd())
+    mem = store.load(root, args.id)
+    before = confidence.band(confidence.score(mem))
+    confidence.record(mem, args.kind, today(), args.note or "")
+    store.save(root, mem)
+    journal.append(root, f"feedback-{args.kind}", mem.id, args.note or "")
+    if args.kind == "outdated":
+        print(paint("!", YELLOW) + f" {mem.id} flagged as outdated. It shows as stale until someone checks it and runs "
+              f"`anchormem verify {mem.id}` (still true) or edits or retires it.")
+        return 0
+    applied, violated = confidence.counts(mem)
+    after = confidence.band(confidence.score(mem))
+    change = f"{before} → {after}" if before != after else after
+    print(paint("✓", GREEN) + f" {mem.id}: {args.kind} recorded · confidence {change} ({applied} applied, {violated} violated)")
+    if args.kind == "violated" and violated >= max(2, applied):
+        print(paint(f"  this memory is violated as often as it holds; check whether it is still true", YELLOW))
+    return 0
+
+
+def cmd_note(args) -> int:
+    root = store.require_root(Path.cwd())
+    a = parse_anchor(root, args.anchor)
+    try:
+        extract(root, a)
+    except (FileMissing, TargetMissing) as e:
+        err(f"anchor {a} does not resolve: {e}")
+        return 2
+    inbox.add(root, str(a), args.text, args.by or default_origin())
+    notes = [n for n in inbox.load(root) if n["anchor"] == str(a)]
+    ready = [g for g in inbox.candidates(notes) if g.anchor == str(a)]
+    print(f"noted on {a}" + paint(f"  ({len(notes)} note{'s' * (len(notes) != 1)} on this anchor)", DIM))
+    if ready:
+        print(paint("  this keeps coming up: run anchormem promote to turn it into a memory", YELLOW))
+    return 0
+
+
+def cmd_promote(args) -> int:
+    root = store.require_root(Path.cwd())
+    groups = inbox.candidates(inbox.load(root), min_count=args.min, days=args.days)
+    if not groups:
+        total = len(inbox.load(root))
+        print(f"nothing to promote ({total} note{'s' * (total != 1)} in the inbox; a group needs {args.min} "
+              f"similar notes on one anchor within {args.days} days)")
+        return 0
+    for g in groups:
+        if not args.apply:
+            print(f"{paint('candidate', YELLOW)}  {g.title}  " + paint(f"[{g.anchor}, {len(g.notes)} notes]", DIM))
+            continue
+        a = Anchor.parse(g.anchor)
+        try:
+            fp = fingerprint(extract(root, a))
+        except (FileMissing, TargetMissing):
+            print(paint(f"skipped  {g.title}  ({g.anchor} no longer resolves)", DIM))
+            continue
+        mid = store.unique_id(root, store.slugify(g.title))
+        mem = Memory(id=mid, title=g.title, body=g.body, anchors=[(a, fp)], origin="agent",
+                     created=today(), verified=today(), commit=gitutil.head(root) or "")
+        store.save(root, mem)
+        inbox.remove(root, g.notes)
+        journal.append(root, "promote", mid, f"{len(g.notes)} notes on {g.anchor}")
+        print(paint("✓", GREEN) + f" {mid}  {g.title}" + paint(f"  ({len(g.notes)} notes)", DIM))
+    if not args.apply:
+        print(paint("\nrun anchormem promote --apply to save these as memories (agent-written, unconfirmed)", DIM))
+    return 0
+
+
+def cmd_handoff(args) -> int:
+    root = store.require_root(Path.cwd())
+    if args.action == "new":
+        if not args.summary:
+            err('give a summary: anchormem handoff new "<where things stand>"')
+            return 2
+        files = [rel_to_root(root, f) for f in args.file] if args.file else None
+        h = handoff.create(root, " ".join(args.summary), sender=args.sender or handoff.default_agent(), to=args.to,
+                           next_steps=args.next, questions=args.question, files=files, days=args.days)
+        journal.append(root, "handoff-new", h.id, f"from {h.sender} to {h.to}")
+        print(f"saved handoff {h.id}" + paint(f"  ({len(h.files)} files, expires {h.expires})", DIM))
+        print(paint(f"  the next session picks it up with: anchormem handoff take", DIM))
+        return 0
+    if args.action == "list":
+        hs = handoff.load_all(root)
+        if not args.all:
+            hs = [h for h in hs if h.status == handoff.PENDING]
+        if not hs:
+            print("no pending handoffs" if not args.all else "no handoffs")
+            return 0
+        for h in sorted(hs, key=lambda x: x.created, reverse=True):
+            st = {"pending": paint("pending ", YELLOW), "accepted": paint("taken   ", DIM),
+                  "expired": paint("expired ", DIM)}.get(h.status, h.status)
+            print(f"{st} {h.id}  " + paint(f"from {h.sender or '?'} to {h.to}", DIM) + f"  {h.summary.splitlines()[0][:70]}")
+        return 0
+    # take
+    me = args.agent or handoff.default_agent()
+    if args.summary:
+        wanted = " ".join(args.summary)
+        hs = [h for h in handoff.load_all(root) if h.id == wanted]
+        if not hs:
+            err(f"no handoff {wanted!r}")
+            return 2
+        if hs[0].status != handoff.PENDING and not args.peek:
+            err(f"handoff {wanted} is {hs[0].status}; use --peek to read it anyway")
+            return 2
+    else:
+        hs = handoff.pending_for(root, me)
+        if not hs:
+            print("no pending handoffs")
+            return 0
+    h = hs[0]
+    print(handoff.render(root, h))
+    if not args.peek:
+        handoff.accept(root, h, me)
+        journal.append(root, "handoff-take", h.id, f"by {me}")
+        print(paint(f"(taken by {me}; it won't be offered again)", DIM))
+    return 0
 
 
 def _install_hooks(root: Path, local: bool, remove: bool, dry_run: bool) -> int:
@@ -596,6 +731,38 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("rm", help="delete memories permanently")
     s.add_argument("ids", nargs="+")
     s.set_defaults(fn=cmd_rm)
+
+    s = sub.add_parser("feedback", help="report whether a memory held up: applied, violated or outdated")
+    s.add_argument("id")
+    s.add_argument("kind", choices=confidence.KINDS)
+    s.add_argument("--note", "-n", help="what happened (recorded in the log; shown for outdated)")
+    s.set_defaults(fn=cmd_feedback)
+
+    s = sub.add_parser("note", help="jot an observation about code; repeated notes become memory candidates")
+    s.add_argument("anchor", help="path, path#symbol or path:10-20")
+    s.add_argument("text")
+    s.add_argument("--by", choices=store.ORIGINS)
+    s.set_defaults(fn=cmd_note)
+
+    s = sub.add_parser("promote", help="turn notes that keep coming up into memories (dry run unless --apply)")
+    s.add_argument("--apply", action="store_true", help="create the memories")
+    s.add_argument("--min", type=int, default=inbox.MIN_COUNT, help=f"notes needed (default {inbox.MIN_COUNT})")
+    s.add_argument("--days", type=int, default=inbox.WINDOW_DAYS, help=f"only notes from the last N days (default {inbox.WINDOW_DAYS})")
+    s.set_defaults(fn=cmd_promote)
+
+    s = sub.add_parser("handoff", help="leave or pick up unfinished work between agent sessions")
+    s.add_argument("action", choices=["new", "list", "take"])
+    s.add_argument("summary", nargs="*", help="new: where things stand · take: a specific handoff id")
+    s.add_argument("--next", "-n", action="append", default=[], metavar="STEP", help="new: a next step (repeatable)")
+    s.add_argument("--question", "-q", action="append", default=[], metavar="Q", help="new: an open question (repeatable)")
+    s.add_argument("--file", "-f", action="append", metavar="PATH", help="new: files in play (default: uncommitted changes)")
+    s.add_argument("--to", default="any", help="new: which agent should take it, e.g. codex (default any)")
+    s.add_argument("--from", dest="sender", help="new: who is leaving it (default: detected)")
+    s.add_argument("--days", type=int, default=7, help="new: expire after N days (default 7)")
+    s.add_argument("--all", action="store_true", help="list: include taken and expired")
+    s.add_argument("--peek", action="store_true", help="take: read without claiming")
+    s.add_argument("--as", dest="agent", help="take: who is taking it (default: detected)")
+    s.set_defaults(fn=cmd_handoff)
 
     s = sub.add_parser("lint", help="find duplicate, contradictory, empty or risky memories")
     s.add_argument("--json", action="store_true")

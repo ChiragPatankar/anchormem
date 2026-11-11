@@ -17,10 +17,11 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from . import render, store
+from . import handoff, inbox, journal, render, store
 from .core import check_memory
 
 SESSION_BUDGET = 2500
+HANDOFF_BUDGET = 1500
 FILE_BUDGET = 3000
 FILE_TOOLS = "Read|Edit|Write|MultiEdit|NotebookEdit"
 TAG = "anchormem hook"
@@ -69,24 +70,52 @@ def session_start_text(payload: dict) -> str:
     if root is None:
         return ""
     _cleanup_state(root)
-    mems = store.load_all(root)
-    if not mems:
-        return ""
-    results = [check_memory(root, m) for m in mems]
-    stale = [r for r in results if not r.ok]
-    unconfirmed = sum(1 for m in mems if m.unconfirmed_agent)
+
     def n(count: int, one: str, many: str) -> str:
         return f"{count} {one if count == 1 else many}"
 
-    lines = [f"anchormem: this repo keeps {n(len(mems), 'memory', 'memories')} about its code in .anchormem/memories/. "
-             "The ones about a file are shown to you automatically when you read or edit it."]
+    # a pending handoff is the most useful thing to show: take it (once) and lead with it
+    lines: List[str] = []
+    sid = payload.get("session_id") or ""
+    state = _load_state(root, sid)
+    pending = handoff.pending_for(root, "claude-code")
+    h = None
+    if state.get("__handoff__"):  # resumed or compacted: show the handoff this session already took
+        h = next((x for x in handoff.load_all(root) if x.id == state["__handoff__"]), None)
+        pending = [p for p in pending if h is None or p.id != h.id]
+    elif pending:
+        h = pending.pop(0)
+        handoff.accept(root, h, "claude-code")
+        journal.append(root, "handoff-take", h.id, "by claude-code (session start)")
+        state["__handoff__"] = h.id
+        _save_state(root, sid, state)
+    if h is not None:
+        text = handoff.render(root, h)
+        if len(text) > HANDOFF_BUDGET:
+            text = text[:HANDOFF_BUDGET - 80].rstrip() + f"\n…(cut; full text in {store.HANDOFF_DIR}/{h.id}.md)\n"
+        lines += ["anchormem: a previous session left a handoff for you. Continue from here unless the user says otherwise.",
+                  text.rstrip()]
+        if pending:
+            lines.append(f"({len(pending)} other pending handoff(s): anchormem handoff list)")
+        lines.append("")
+
+    mems = store.load_all(root)
+    if not mems:
+        return "\n".join(lines).strip()
+    results = [check_memory(root, m) for m in mems]
+    stale = [r for r in results if not r.ok]
+    unconfirmed = sum(1 for m in mems if m.unconfirmed_agent)
+    budget = SESSION_BUDGET + (sum(len(x) + 1 for x in lines))
+
+    lines.append(f"anchormem: this repo keeps {n(len(mems), 'memory', 'memories')} about its code in .anchormem/memories/. "
+                 "The ones about a file are shown to you automatically when you read or edit it.")
     if stale:
         lines.append(f"{n(len(stale), 'memory', 'memories')} may be out of date because the code "
                      f"{'it describes' if len(stale) == 1 else 'they describe'} changed:")
         shown = 0
         for r in render.order(stale):
             line = f"- {r.memory.id} ({r.status}): {r.memory.title} [{', '.join(str(a.anchor) for a in r.anchors if not a.ok)}]"
-            if sum(len(x) + 1 for x in lines) + len(line) > SESSION_BUDGET - 300:
+            if sum(len(x) + 1 for x in lines) + len(line) > budget - 400:
                 break
             lines.append(line)
             shown += 1
@@ -100,8 +129,14 @@ def session_start_text(payload: dict) -> str:
     if unconfirmed:
         lines.append(f"{n(unconfirmed, 'memory was', 'memories were')} written by an agent and not yet confirmed "
                      f"by a person; treat {'it' if unconfirmed == 1 else 'them'} as notes, not rules.")
-    lines.append('To save something non-obvious you learn: anchormem add "<title>" --anchor <path>#<symbol> --body "<why>" --by agent')
-    return "\n".join(lines)
+    ready = inbox.candidates(inbox.load(root))
+    if ready:
+        lines.append(f"{n(len(ready), 'group', 'groups')} of repeated notes could become memories; "
+                     "review with `anchormem promote` (add --apply to create them).")
+    lines.append('To save something non-obvious you learn: anchormem add "<title>" --anchor <path>#<symbol> --body "<why>" --by agent. '
+                 "After relying on a memory: anchormem feedback <id> applied|violated|outdated. "
+                 'If you stop with work unfinished: anchormem handoff new "<where things stand>" -n "<next step>".')
+    return "\n".join(lines).strip()
 
 
 def post_tool_text(payload: dict) -> str:
@@ -134,20 +169,30 @@ def _state_file(root: Path, session_id: str) -> Path:
     return root / store.STATE_DIR / f"hooks-{safe}.json"
 
 
-def _first_time(root: Path, session_id: str, rel: str, signature: List[str]) -> bool:
+def _load_state(root: Path, session_id: str) -> Dict:
     f = _state_file(root, session_id)
     try:
-        seen: Dict[str, List[str]] = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+        data = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+        return data if isinstance(data, dict) else {}
     except (ValueError, OSError):
-        seen = {}
+        return {}
+
+
+def _save_state(root: Path, session_id: str, state: Dict) -> None:
+    f = _state_file(root, session_id)
+    try:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps(state), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _first_time(root: Path, session_id: str, rel: str, signature: List[str]) -> bool:
+    seen = _load_state(root, session_id)
     if seen.get(rel) == signature:
         return False
     seen[rel] = signature
-    try:
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text(json.dumps(seen), encoding="utf-8")
-    except OSError:
-        pass
+    _save_state(root, session_id, seen)
     return True
 
 

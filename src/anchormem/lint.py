@@ -7,6 +7,7 @@ Findings:
   warn     contradiction      memories on the same code disagree (one says never/don't, the other doesn't)
   warn     dead-reference     the body mentions a file path that doesn't exist
   warn     instruction-like   an agent-written memory tells the agent to do something risky
+  warn     often-violated     agents report it violated at least as often as it held
   info     line-range         line-range anchors break on any edit above them; prefer a symbol
 """
 from __future__ import annotations
@@ -16,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Set
 
+from .confidence import counts
 from .store import Memory
 
 _WORD = re.compile(r"[a-z0-9_]+")
@@ -64,6 +66,10 @@ def lint(root: Path, mems: List[Memory]) -> List[Finding]:
                 continue
             if not (root / ref).exists():
                 out.append(Finding("warn", "dead-reference", m.id, f"body mentions `{ref}`, which doesn't exist"))
+        applied, violated = counts(m)
+        if violated >= 2 and violated >= applied:
+            out.append(Finding("warn", "often-violated", m.id,
+                               f"violated {violated} times vs applied {applied}; it may no longer be true"))
         if m.origin == "agent" and _RISKY.search(f"{m.title}\n{m.body}"):
             out.append(Finding("warn", "instruction-like", m.id,
                                "agent-written memory contains instructions an agent might follow blindly; review it"))

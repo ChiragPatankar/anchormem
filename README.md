@@ -20,6 +20,7 @@ $ anchormem check
 - It works with any agent. `anchormem init` writes short instructions into `AGENTS.md` (and `CLAUDE.md` if you have one).
 - With Claude Code, hooks show the agent the memories about a file as soon as it reads or edits that file.
 - It records who wrote each memory. Memories written by an agent are labelled as notes until a person confirms them.
+- Agents report whether a memory held up, which gives each memory a confidence score. They can also leave handoffs so the next session, in the same tool or a different one, picks up where they stopped.
 - It uses only the Python standard library. Git is optional, but with git it can follow renamed files.
 - `anchormem check` exits with 1 when anything is stale, so you can run it in CI or a pre-commit hook.
 
@@ -55,7 +56,7 @@ anchormem hooks install        # writes .claude/settings.json; --local for setti
 
 Then restart Claude Code. Two hooks are installed:
 
-- **SessionStart** gives the agent a short summary: how many memories exist, which are stale and why, and how to fix them.
+- **SessionStart** gives the agent a pending handoff, if there is one, and a short summary: how many memories exist, which are stale and why, and how to fix them.
 - **PostToolUse**, on `Read`, `Edit`, `Write`, `MultiEdit` and `NotebookEdit`, adds the memories anchored to that file to the agent's context. Each file is shown once per session, and again only if a memory's status changes. Output is capped at about 3,000 characters: details are dropped first, then whole memories, and a note says what was left out.
 
 The hooks never fail a session. Any error makes them exit quietly. `anchormem hooks remove` takes them out and leaves the rest of your settings alone.
@@ -86,6 +87,7 @@ A memory can have several anchors. It's stale if any of them is.
 | `MOVED` | The file was renamed, or the symbol now lives in another file. | `anchormem verify <id> --follow` updates the anchor. |
 | `MISSING` | The file or symbol is gone. | Edit the anchor, or `anchormem retire <id> --reason "..."`. |
 | `UNVERIFIED` | The anchor was written by hand and has no fingerprint yet. | `anchormem verify <id>`. |
+| `FLAGGED` | An agent reported the memory outdated, even though its code didn't change. | Check it. `anchormem verify <id>` clears the flag. |
 
 Whitespace doesn't count as a change, so reformatting or re-indenting code won't flag anything.
 
@@ -100,6 +102,43 @@ anchormem confirm <id>
 ```
 
 `confirm` shows the memory and asks for a yes. It refuses when nobody is at the terminal, so an agent can't confirm its own notes. (`--yes` skips the question, for scripts you trust.)
+
+## Confidence
+
+A memory can be true when written and still turn out wrong in practice. After relying on one, the agent reports what happened:
+
+```bash
+anchormem feedback pool-size-why applied      # it held
+anchormem feedback pool-size-why violated     # the code or the user contradicted it
+anchormem feedback pool-size-why outdated --note "plan upgraded to 100 connections"
+```
+
+`applied` and `violated` update the confidence score. The score is a cautious estimate of how often the memory holds (the Wilson 95% lower bound on applied / (applied + violated)), so one good report gives *low*, and it takes several to reach *high*. The score fades to zero over 180 days without new reports or a `verify`. Confidence appears in `context`, `list` and the hooks, and better-supported memories are listed first. `lint` warns when a memory is violated at least as often as it holds.
+
+`outdated` doesn't change the score. It flags the memory, and `check` reports it as stale until someone runs `verify`.
+
+## Handoffs between sessions and agents
+
+When an agent stops before the work is done, it leaves a handoff:
+
+```bash
+anchormem handoff new "Switched lineTotal to banker's rounding; totals tests still fail" \
+  -n "update the totals fixture in tests/billing" -q "half-even for refunds too?" --to codex
+```
+
+The handoff records the summary, next steps, open questions and the files in play. Files default to whatever has uncommitted changes, and each is fingerprinted. The next session runs `anchormem handoff take` and sees which of those files changed since. A handoff can be taken only once. Use `--to` to address it to a particular agent. It expires after 7 days (`--days`). `handoff list [--all]` shows them, and `take --peek` reads one without claiming it.
+
+With the Claude Code hooks installed, a new session takes the newest pending handoff automatically. If the conversation is compacted or resumed, the hook shows that same handoff again, since compacting would otherwise lose it. Handoffs are plain Markdown in `.anchormem/handoffs/`, so they work across Claude Code, Codex, Cursor or a person, and across machines if you commit them.
+
+## Notes that become memories
+
+Not everything an agent notices deserves a memory. Notes are a cheaper step:
+
+```bash
+anchormem note src/db/pool.py#POOL_SIZE "pool size seems tied to the postgres plan"
+```
+
+Notes are appended to `.anchormem/inbox.jsonl`. `anchormem promote` groups them by anchor and similar wording. Three similar notes on one anchor within 30 days make a candidate (`--min` and `--days` change this). Without `--apply` it only lists candidates. With `--apply`, each becomes an agent-written, unconfirmed memory, its notes are removed from the inbox, and the memory's body lists them.
 
 ## Keeping memory clean
 
@@ -118,6 +157,9 @@ anchormem confirm <id>
 | `anchormem verify <id…> [--follow]` | Marks memories as still true and records new fingerprints and the current commit. |
 | `anchormem confirm <id…>` | Lets a person confirm memories an agent wrote. |
 | `anchormem retire <id…> -r <reason> [--superseded-by <id>]` / `restore <id…>` | Retires memories with a reason, or brings them back. |
+| `anchormem feedback <id> applied\|violated\|outdated [--note …]` | Reports whether a memory held up. |
+| `anchormem handoff new\|list\|take …` | Leaves or picks up unfinished work between sessions. |
+| `anchormem note <anchor> "<text>"` / `promote [--apply]` | Jots an observation, and turns repeated ones into memories. |
 | `anchormem lint [--strict] [--json]` | Checks the memories themselves for problems. |
 | `anchormem doctor` | Checks the setup: memory files parse, agent rules are current, hooks, PATH, gitignore, git. |
 | `anchormem hooks install\|remove [--local] [--dry-run]` | Installs or removes the Claude Code hooks. |
@@ -145,6 +187,8 @@ The frontmatter is valid YAML, and each fingerprint is stored as a YAML comment.
 .anchormem/
   memories/        active memories (commit these)
   retired/         retired memories, with reasons
+  handoffs/        handoffs between sessions
+  inbox.jsonl      notes waiting to be promoted
   log.md           append-only change log
   .state/          per-machine hook state (gitignored)
 ```
@@ -162,11 +206,13 @@ exec anchormem check -q
 
 ## Where the ideas came from
 
-Version 0.2 borrowed from a study of other agent-memory projects:
+Versions 0.2 and 0.3 borrowed from a study of other agent-memory projects:
 - **Hook delivery with a size limit:** open-second-brain and ai-memory.
 - **Instruction block between marked lines, `--remove`, `doctor`, and trust labels:** gbrain.
 - **Retiring with a reason instead of deleting:** open-second-brain and ai-memory.
 - **Rule-based lint and an append-only log:** Karpathy's LLM wiki, ai-memory and COG.
+- **Evidence-based confidence (Wilson score with freshness) and a notes inbox that promotes after repeats:** open-second-brain.
+- **One-time handoffs between agents:** ai-memory.
 
 What anchormem adds is the anchor: memory tied to specific code, so it can tell when it's out of date.
 

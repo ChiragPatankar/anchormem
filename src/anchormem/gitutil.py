@@ -28,6 +28,29 @@ def commit_exists(root: Path, commit: str) -> bool:
     return _git(root, "cat-file", "-e", f"{commit}^{{commit}}") is not None
 
 
+def changed_files(root: Path, limit: int = 30) -> List[str]:
+    """Files with uncommitted changes (modified, added, renamed, deleted, untracked), outside .anchormem/."""
+    out = _git(root, "status", "--porcelain", "-z", "-uall")
+    if not out:
+        return []
+    entries = out.split("\0")
+    files: List[str] = []
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        code, path = entry[:2], entry[3:]
+        if "R" in code or "C" in code:
+            i += 1  # the next entry is the old path
+        if not path.startswith(".anchormem/") and path not in files:
+            files.append(path)
+        if len(files) >= limit:
+            break
+    return files
+
+
 def renamed_to(root: Path, commit: Optional[str], path: str) -> List[str]:
     """Where `path` went since `commit`, using git's rename detection (committed and staged changes)."""
     if not commit or not commit_exists(root, commit):

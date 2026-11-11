@@ -11,6 +11,7 @@ from .anchors import (Anchor, FileMissing, TargetMissing, extract, find_file_by_
 from .store import Memory
 
 OK, CHANGED, MOVED, MISSING, UNVERIFIED = "ok", "changed", "moved", "missing", "unverified"
+FLAGGED = "flagged"  # an agent reported the memory outdated; cleared by verify
 
 
 @dataclass
@@ -37,21 +38,32 @@ class MemoryResult:
     anchors: List[AnchorResult]
 
     @property
+    def flagged(self) -> str:
+        """Why an agent reported this memory outdated (empty if it wasn't)."""
+        return self.memory.extra.get("flagged", "")
+
+    @property
     def ok(self) -> bool:
-        return all(a.ok for a in self.anchors)
+        return all(a.ok for a in self.anchors) and not self.flagged
 
     @property
     def status(self) -> str:
         bad = [a.status for a in self.anchors if not a.ok]
-        for s in (MISSING, MOVED, CHANGED, UNVERIFIED):
+        for s in (MISSING, MOVED, CHANGED):
             if s in bad:
                 return s
-        return OK
+        if self.flagged:
+            return FLAGGED
+        return UNVERIFIED if UNVERIFIED in bad else OK
 
     def to_dict(self) -> dict:
+        from .confidence import band, counts, score
         m = self.memory
+        applied, violated = counts(m)
         return {"id": m.id, "title": m.title, "status": self.status, "verified": m.verified,
-                "commit": m.commit, "anchors": [a.to_dict() for a in self.anchors]}
+                "commit": m.commit, "flagged": self.flagged or None,
+                "confidence": {"band": band(score(m)), "score": score(m), "applied": applied, "violated": violated},
+                "anchors": [a.to_dict() for a in self.anchors]}
 
 
 def check_anchor(root: Path, anchor: Anchor, stored_fp: Optional[str], since: Optional[str] = None) -> AnchorResult:

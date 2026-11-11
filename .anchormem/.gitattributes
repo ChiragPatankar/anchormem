@@ -1,1 +1,2 @@
 log.md merge=union
+inbox.jsonl merge=union

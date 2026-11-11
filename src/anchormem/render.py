@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
+from .confidence import describe, score
 from .core import MemoryResult
 
 AGENT_NOTE = "written by an agent and not yet confirmed by a person"
@@ -10,8 +11,8 @@ STALE_NOTE = "This memory may be out of date. Check it against the code before r
 
 
 def order(results: List[MemoryResult]) -> List[MemoryResult]:
-    """Stale memories first: they are the ones that need attention."""
-    return sorted(results, key=lambda r: (r.ok, r.memory.id))
+    """Stale memories first (they need attention), then the best-supported ones."""
+    return sorted(results, key=lambda r: (r.ok, -(score(r.memory) or 0.0), r.memory.id))
 
 
 def one(r: MemoryResult, full: bool = True) -> str:
@@ -21,11 +22,16 @@ def one(r: MemoryResult, full: bool = True) -> str:
     meta = f"id: {m.id} · verified {m.verified or 'never'}" + (f" @ {m.commit}" if m.commit else "")
     if m.unconfirmed_agent:
         meta += f" · {AGENT_NOTE}"
+    conf = describe(m)
+    if conf:
+        meta += f" · {conf}"
     lines.append(meta)
     if full:
         lines.append("anchors: " + ", ".join(f"{a.anchor} ({a.status})" for a in r.anchors))
     if not r.ok:
         lines.append(f"> {STALE_NOTE}")
+        if r.flagged:
+            lines.append(f">   reported outdated {r.flagged}")
         if full:
             lines += [f">   {a.anchor}: {a.detail}" for a in r.anchors if not a.ok and a.detail]
     if full and m.body:
