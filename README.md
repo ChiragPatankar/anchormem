@@ -51,7 +51,7 @@ bash examples/demo.sh
 ## Using it with Claude Code
 
 ```bash
-anchormem hooks install        # writes .claude/settings.json; --local for settings.local.json
+anchormem hooks install        # writes .claude/settings.json; --local writes settings.local.json and gitignores it
 ```
 
 Then restart Claude Code. Two hooks are installed:

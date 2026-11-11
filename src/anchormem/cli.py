@@ -648,6 +648,11 @@ def _install_hooks(root: Path, local: bool, remove: bool, dry_run: bool) -> int:
         print(f"removed anchormem hooks from {rel}")
     else:
         print(f"installed Claude Code hooks in {rel}")
+        if local and gitutil.is_ignored(root, rel.as_posix()) is False:
+            gi = root / ".gitignore"
+            have = gi.read_text(encoding="utf-8") if gi.exists() else ""
+            gi.write_text(have + ("" if not have or have.endswith("\n") else "\n") + rel.as_posix() + "\n", encoding="utf-8")
+            print(f"added {rel.as_posix()} to .gitignore (it is your personal settings file)")
         print(paint("  SessionStart: summary of memories, listing stale ones", DIM))
         print(paint(f"  PostToolUse ({hooks.FILE_TOOLS}): memories about the file just touched", DIM))
         if not shutil.which("anchormem"):

@@ -14,6 +14,13 @@ def _git(root: Path, *args: str) -> Optional[str]:
     return out.stdout if out.returncode == 0 else None
 
 
+def is_ignored(root: Path, rel: str) -> Optional[bool]:
+    """True/False if git says the path is ignored; None when this isn't a git repo."""
+    if toplevel(root) is None:
+        return None
+    return _git(root, "check-ignore", "-q", rel) is not None
+
+
 def toplevel(start: Path) -> Optional[Path]:
     out = _git(start, "rev-parse", "--show-toplevel")
     return Path(out.strip()) if out else None

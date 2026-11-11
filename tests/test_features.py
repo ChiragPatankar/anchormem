@@ -180,6 +180,15 @@ class TestHooks(RepoCase):
         self.run_cli("hooks", "remove")
         self.assertFalse(f.exists())
 
+    def test_local_install_gitignores_personal_settings(self):
+        gi = self.root / ".gitignore"
+        gi.write_text("node_modules/")  # no trailing newline
+        self.assertEqual(self.run_cli("hooks", "install", "--local")[0], 0)
+        self.assertEqual(gi.read_text(), "node_modules/\n.claude/settings.local.json\n")
+        self.run_cli("hooks", "remove", "--local")
+        self.run_cli("hooks", "install", "--local")
+        self.assertEqual(gi.read_text().count("settings.local.json"), 1)  # not added twice
+
     def test_invalid_settings_json_is_not_overwritten(self):
         f = self.root / ".claude/settings.json"
         f.parent.mkdir()
