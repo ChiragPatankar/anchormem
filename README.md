@@ -79,11 +79,28 @@ anchormem dashboard --serve    # a live page that updates by itself as you work 
 
 The page starts with **Do this next**: each memory that needs a look, handoffs waiting for you, and memories waiting for your approval. Every step comes with its command and a copy button. Below that:
 - the status of every memory, with a plain explanation of each status,
-- a **map** of memories and the code they're about: dots for memories, small circles for functions and classes, squares for files, colored by status. Hover a dot to see what it is, click a memory to jump to it, or click a file to list its memories. Stale memories pulse red, and in `--serve` mode they turn green as soon as you verify them,
+- a **neural map**: the repo's files and functions as dim neurons, with memories lit up on top and linked to the code they're about. Signals run along the links, stale memories pulse red, and in `--serve` mode they turn green as soon as you verify them. Hover a neuron to see what it is. Click a memory to jump to it, a file to list its memories, or dim code to get the command for adding a memory there. Drag to move, and use ⌘/Ctrl + scroll or the buttons to zoom,
 - a table of all memories that you can search and filter ("Need a look", "Not approved"),
 - which files have memories, activity over the last 14 days, handoffs, the notes inbox, lint findings, retired memories and the log.
 
 It follows your system's light or dark setting and works on a phone. The page is a single HTML file written to `.anchormem/.state/` (gitignored), or wherever you point `-o`. It opens the browser only for a person at a terminal, never when an agent or script runs it (`--open` / `--no-open` override that). `--serve` listens on 127.0.0.1 only.
+
+## Try it on any repo
+
+```bash
+anchormem try https://github.com/owner/repo
+```
+
+This clones the repo (latest commit only) into a temporary folder, turns its explanatory comments into memories, and opens the live dashboard with the neural map. Nothing is written to your own files, and the clone is deleted when you press Ctrl+C (`--keep` keeps it). It works with a local folder too, and that's also cloned, so the original is never touched. anchormem only reads the code. It never runs anything from the repo, and it skips symlinks that point outside it.
+
+## Start from the comments you already have
+
+```bash
+anchormem seed            # lists what it found
+anchormem seed --apply    # saves them
+```
+
+Comments tagged `NOTE:`, `WHY:`, `HACK:`, `IMPORTANT:`, `WARNING:`, `SAFETY:`, `INVARIANT:` or `CAUTION:` usually say something true and non-obvious about the code next to them, which is what a memory is. `seed` turns each one into a memory anchored to the function it sits in (or the file), so it's flagged when that code changes. They're saved as agent-written and not yet approved, so check them with `anchormem confirm`. `TODO` and `FIXME` are skipped: they're tasks, not facts. Running it again doesn't add duplicates.
 
 ## Anchors
 
@@ -186,6 +203,8 @@ Notes are appended to `.anchormem/inbox.jsonl`. `anchormem promote` groups them 
 | `anchormem lint [--strict] [--json]` | Checks the memories themselves for problems. |
 | `anchormem` / `anchormem status` | Where things stand and what to run next. |
 | `anchormem dashboard [--serve] [-o FILE] [--open\|--no-open]` | Opens a page with what to do next, every memory and its status, activity, handoffs, notes and lint. `--serve` keeps it live. |
+| `anchormem seed [--apply] [--limit N]` | Turns NOTE / WHY / HACK / IMPORTANT / WARNING comments into memories. |
+| `anchormem try <git-url-or-folder> [--keep]` | Clones a repo to a temp folder, seeds it and opens the live dashboard. |
 | `anchormem doctor` | Checks the setup: memory files parse, agent rules are current, hooks, PATH, gitignore, git. |
 | `anchormem hooks install\|remove [--local] [--dry-run]` | Installs or removes the Claude Code hooks. |
 | `anchormem list [--retired] [--json]` / `rm <id…>` | Lists or deletes memories. |

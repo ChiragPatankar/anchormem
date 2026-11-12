@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from test_anchormem import RepoCase, git  # noqa: E402
 
-from anchormem import advice, confidence, dashboard, handoff, hooks, inbox, store  # noqa: E402
+from anchormem import advice, codemap, confidence, dashboard, handoff, hooks, inbox, seed, store  # noqa: E402
 from anchormem.cli import main  # noqa: E402
 from anchormem.lint import lint  # noqa: E402
 
@@ -291,7 +291,11 @@ class TestGraph(RepoCase):
         self.assertEqual(sum(1 for l in g["links"] if l[:2] == ["a:src/db/pool.py#POOL_SIZE", "f:src/db/pool.py"]), 1)
         page = dashboard.build(self.root)
         data = page.split('id="graph-data">', 1)[1].split("</script>", 1)[0]
-        self.assertEqual(len(json.loads(data)["nodes"]), len(g["nodes"]))
+        nodes_on_page = {n["id"]: n for n in json.loads(data)["nodes"]}
+        self.assertTrue(set(nodes) <= set(nodes_on_page))       # every memory node is drawn...
+        code = [n for n in nodes_on_page.values() if n["status"] == "code"]
+        self.assertTrue(code)                                    # ...on top of the repo's other code
+        self.assertTrue(all(n["count"] == 0 for n in code))
         self.assertIn('id="m-pool"', page)
 
     def test_graph_data_cannot_break_out_of_its_script_tag(self):
@@ -329,6 +333,73 @@ class TestServeDisconnects(RepoCase):
                 httpd.server_close()
         self.assertEqual(len(ok.strip()), 12)  # still serving
         self.assertNotIn("Traceback", err.getvalue())
+
+
+class TestCodeMapAndSeed(RepoCase):
+    def test_symbols_and_enclosing_function(self):
+        py = "class A:\n    def m(self):\n        # NOTE: x\n        return 1\n\ndef f():\n    pass\n"
+        self.assertEqual([n for n, _, _ in codemap.list_symbols(py, ".py")], ["A", "A.m", "f"])
+        self.assertEqual(codemap.enclosing_symbol(py, ".py", 3), "A.m")
+        self.assertIsNone(codemap.enclosing_symbol(py, ".py", 5))
+        ts = "export function a(x: number) {\n  return x;\n}\nconst b = (q) => {\n  return q;\n};\nexport class C {\n  m() {}\n}\n"
+        self.assertEqual([n for n, _, _ in codemap.list_symbols(ts, ".ts")], ["a", "b", "C"])
+        self.assertEqual(codemap.enclosing_symbol(ts, ".ts", 5), "b")
+
+    def test_skeleton_puts_kept_files_first_and_skips_outside_symlinks(self):
+        self.write("src/app/big.py", "".join(f"def f{i}():\n    pass\n" for i in range(9)))
+        import tempfile
+        other = tempfile.TemporaryDirectory()
+        self.addCleanup(other.cleanup)
+        outside = Path(other.name) / "outside_secret.py"
+        outside.write_text("def secret():\n    # NOTE: should never be read through a symlink\n    pass\n")
+        try:
+            os.symlink(outside, self.root / "src" / "link.py")
+        except (OSError, NotImplementedError):
+            self.skipTest("no symlinks here")
+        sk = dict(codemap.skeleton(self.root, keep=["src/db/pool.py"]))
+        self.assertEqual(list(dict(codemap.skeleton(self.root, keep=["src/db/pool.py"])))[0], "src/db/pool.py")
+        self.assertEqual(len(sk["src/app/big.py"]), 6)  # capped
+        self.assertNotIn("src/link.py", sk)
+        self.assertFalse(any("symlink" in f.text for f in seed.scan(self.root)))
+
+    def test_seed_turns_tagged_comments_into_anchored_memories(self):
+        self.write("src/db/pool.py", "def get_pool():\n    # WHY: capped at 10 because the hosted plan allows 25\n"
+                   "    # connections across 2 workers.\n    # TODO: this is a task, not a fact\n    return 10\n")
+        self.write("src/billing/invoice.ts", "export function lineTotal(x) {\n  // NOTE: rounding is per line, not per invoice\n"
+                   "  return x;\n}\n// HACK: short\n")
+        self.run_cli("init")
+        _, out, _ = self.run_cli("seed")
+        self.assertIn("2 found", out)
+        self.assertEqual(store.load_all(self.root), [])  # dry run writes nothing
+        self.run_cli("seed", "--apply")
+        mems = {str(m.anchors[0][0]): m for m in store.load_all(self.root)}
+        self.assertEqual(set(mems), {"src/db/pool.py#get_pool", "src/billing/invoice.ts#lineTotal"})
+        m = mems["src/db/pool.py#get_pool"]
+        self.assertEqual(m.title, "capped at 10 because the hosted plan allows 25 connections across 2 workers")
+        self.assertTrue(m.unconfirmed_agent)
+        self.assertIn("WHY comment in src/db/pool.py, line 2", m.body)
+        self.assertEqual(self.check_json()[0], 0)
+        _, out, _ = self.run_cli("seed", "--apply")
+        self.assertIn("No new", out)  # running it again doesn't duplicate
+
+    def test_try_clones_seeds_and_cleans_up(self):
+        self.write("src/db/pool.py", "def get_pool():\n    # IMPORTANT: never raise above 10 without upgrading the plan\n    return 10\n")
+        self.commit("code")
+        seen = {}
+
+        def fake_serve(root, port, open_browser=True):
+            seen["root"] = root
+            seen["mems"] = [m.title for m in store.load_all(root)]
+            return 0
+        with mock.patch.object(dashboard, "serve", fake_serve):
+            code, out, err = self.run_cli("try", str(self.root), "--no-open")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(seen["mems"], ["never raise above 10 without upgrading the plan"])
+        self.assertFalse(seen["root"].exists())               # the temporary clone is gone
+        self.assertFalse((self.root / ".anchormem").exists())  # the original repo is untouched
+        code, _, err = self.run_cli("try", str(self.root / "nope"), "--no-open")
+        self.assertEqual(code, 2)
+        self.assertIn("git clone failed", err)
 
 
 if __name__ == "__main__":

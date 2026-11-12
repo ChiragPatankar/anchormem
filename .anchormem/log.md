@@ -17,3 +17,4 @@ Append-only record of memory changes. Newest at the bottom.
 ## [2026-11-10 22:34] verify | exit-codes | src/anchormem/cli.py#main fp 0fac88cf4b15 -> fb6c44aa4990 @ 62a092e
 ## [2026-11-10 22:34] verify | stdlib-only | pyproject.toml fp 485488e03467 -> 69f3e580fa20 @ 62a092e
 ## [2026-11-10 22:35] add | add-stdin-only-when-piped | by agent | src/anchormem/cli.py#_stdin_has_data
+## [2026-11-12 01:48] add | no-symlinks-outside-repo | by agent | src/anchormem/codemap.py#inside

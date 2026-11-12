@@ -5,12 +5,13 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import __version__, advice, confidence, dashboard, gitutil, handoff, hooks, inbox, journal, render, store
+from . import __version__, advice, confidence, dashboard, seed, gitutil, handoff, hooks, inbox, journal, render, store
 from .anchors import Anchor, FileMissing, TargetMissing, extract, fingerprint
 from .core import CHANGED, FLAGGED, MISSING, MOVED, OK, UNVERIFIED, check_memory
 from .lint import lint
@@ -605,6 +606,79 @@ def cmd_promote(args) -> int:
     return 0
 
 
+def _seed(root: Path, limit: int, apply: bool, quiet: bool = False) -> int:
+    have = {m.title.strip().lower() for m in store.load_all(root) + store.load_retired(root)}
+    found = [f for f in seed.scan(root) if f.title.strip().lower() not in have]
+    if not found:
+        if not quiet:
+            print("No new NOTE / WHY / HACK / IMPORTANT / WARNING comments found to turn into memories.")
+        return 0
+    shown = found[:limit]
+    saved = 0
+    for f in shown:
+        where = paint(f"[{f.anchor}]", DIM)
+        if not apply:
+            print(f"{paint(f.tag.lower(), YELLOW):<20} {f.title}  {where}")
+            continue
+        try:
+            fp = seed.fingerprint_of(root, f)
+        except (FileMissing, TargetMissing):
+            continue
+        mid = store.unique_id(root, store.slugify(f.title))
+        body = f"{f.text}\n\nFrom a {f.tag} comment in {f.path}, line {f.line}."
+        mem = Memory(id=mid, title=f.title, body=body, anchors=[(f.anchor, fp)], origin="agent",
+                     created=today(), verified=today(), commit=gitutil.head(root) or "")
+        store.save(root, mem)
+        journal.append(root, "seed", mid, f"{f.tag} comment | {f.anchor}")
+        saved += 1
+        if not quiet:
+            print(paint("✓", GREEN) + f" {mid}  " + where)
+    more = len(found) - len(shown)
+    if apply:
+        print(f"saved {saved} memories from comments (written by an agent: approve them with anchormem confirm)"
+              + (f"; {more} more found, raise --limit to include them" if more else ""))
+    else:
+        print(paint(f"\n{len(found)} found" + (f", showing {limit}" if more else "")
+                    + ". Run anchormem seed --apply to save them as memories (agent-written, not yet approved).", DIM))
+    return 0
+
+
+def cmd_seed(args) -> int:
+    return _seed(store.require_root(Path.cwd()), args.limit, args.apply)
+
+
+def cmd_try(args) -> int:
+    import shutil
+    import subprocess
+    import tempfile
+    src = args.source
+    if os.path.isdir(src):
+        src = str(Path(src).resolve())
+    name = re.sub(r"\.git$", "", src.rstrip("/").rsplit("/", 1)[-1]) or "repo"
+    tmp = Path(tempfile.mkdtemp(prefix="anchormem-try-"))
+    dest = tmp / name
+    try:
+        print(f"cloning {args.source} (latest commit only) into a temporary folder…")
+        r = subprocess.run(["git", "clone", "--depth", "1", "--quiet", "--no-tags", src, str(dest)],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            err("git clone failed: " + (r.stderr.strip().splitlines() or ["unknown error"])[-1])
+            return 2
+        store.init_root(dest)
+        store.ensure_support_files(dest)
+        print("turning its NOTE / WHY / HACK / IMPORTANT / WARNING comments into memories…")
+        _seed(dest, args.limit, apply=True, quiet=True)
+        print(paint("nothing is written to your own files; the clone is deleted when you stop"
+                    if not args.keep else f"the clone stays at {dest}", DIM))
+        return dashboard.serve(dest, args.port, open_browser=_should_open(args))
+    finally:
+        if not args.keep:
+            def _force(func, path, _exc):
+                os.chmod(path, 0o700)
+                func(path)
+            shutil.rmtree(tmp, onerror=_force)
+
+
 def cmd_handoff(args) -> int:
     root = store.require_root(Path.cwd())
     if args.action == "new":
@@ -884,6 +958,20 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--open", action="store_true", help="always open the browser")
     s.add_argument("--no-open", action="store_true", help="never open the browser")
     s.set_defaults(fn=cmd_dashboard)
+
+    s = sub.add_parser("seed", help="turn NOTE / WHY / HACK / IMPORTANT / WARNING comments into memories")
+    s.add_argument("--apply", action="store_true", help="save them (without it, only lists what it found)")
+    s.add_argument("--limit", type=int, default=50, help="at most this many (default 50)")
+    s.set_defaults(fn=cmd_seed)
+
+    s = sub.add_parser("try", help="try anchormem on any git repo: clone it to a temp folder, seed it, open the live dashboard")
+    s.add_argument("source", help="a git URL (https://github.com/owner/repo) or a local repo folder")
+    s.add_argument("--limit", type=int, default=150, help="at most this many memories from comments (default 150)")
+    s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--keep", action="store_true", help="keep the clone instead of deleting it on exit")
+    s.add_argument("--open", action="store_true", help="always open the browser")
+    s.add_argument("--no-open", action="store_true", help="never open the browser")
+    s.set_defaults(fn=cmd_try)
 
     s = sub.add_parser("status", help="where things stand and what to do next (same as plain `anchormem`)")
     s.set_defaults(fn=cmd_status)

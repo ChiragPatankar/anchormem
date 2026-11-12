@@ -15,7 +15,7 @@ from html import escape
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from . import __version__, core, gitutil, handoff, store
+from . import __version__, codemap, core, gitutil, handoff, store
 from .advice import EXPLAIN, Snapshot, Step, snapshot, stale_step
 from .confidence import band, counts, score
 
@@ -165,22 +165,36 @@ def _page(root: Path, s: Snapshot, live: bool) -> str:
         table = ('<div class="pad">' + _empty("No memories yet. Save one with:",
                  'anchormem add "<what is true>" --anchor <file>#<function> --body "<why>"') + '</div>')
 
-    # ---- map: memories -> anchored code -> files
-    graph = graph_data(results)
+    # ---- map: memories -> anchored code -> files, on top of the repo's code
+    try:
+        keep = [a.anchor.path for r in results for a in r.anchors]
+        skel = codemap.skeleton(root, keep=keep)
+    except Exception:
+        skel = []
+    graph = graph_data(results, skel)
+    n_files = sum(1 for n in graph["nodes"] if n["kind"] == "file")
+    n_code = sum(1 for n in graph["nodes"] if n["kind"] == "symbol")
     if graph["nodes"]:
         gjson = json.dumps(graph, separators=(",", ":")).replace("<", "\\u003c").replace("&", "\\u0026")
-        mapsec = (f'<div class="map"><svg id="graph" role="img" aria-label="Map of {len(mems)} memories and the code they are about">'
-                  f'</svg><div id="gtip" class="gtip" hidden></div>'
+        mapsec = (f'<div class="map"><canvas id="graph" role="img" tabindex="0" aria-label="Neural map of {len(mems)} memories '
+                  f'and the {n_files} files and {n_code} functions they sit in"></canvas>'
+                  '<div class="ghud"><div id="gstat"></div><div class="gctl" role="group" aria-label="Zoom">'
+                  '<button type="button" data-z="in" aria-label="Zoom in">+</button>'
+                  '<button type="button" data-z="out" aria-label="Zoom out">−</button>'
+                  '<button type="button" data-z="fit">fit</button></div></div>'
+                  '<div id="gtip" class="gtip" hidden></div>'
                   '<div class="gkey"><span><i class="k-m"></i>memory</span><span><i class="k-s"></i>function / class</span>'
-                  '<span><i class="k-f"></i>file</span><span><i style="background:var(--ok)"></i>ok</span>'
-                  '<span><i style="background:var(--stale)"></i>changed / missing</span>'
-                  '<span><i style="background:var(--amber)"></i>moved / flagged</span></div>'
-                  '<p class="dim ghelp">Hover a dot to see what it is. Click a memory to jump to it, or a file to list its memories.</p>'
+                  '<span><i class="k-f"></i>file</span><span><i style="background:#58e0a2"></i>ok</span>'
+                  '<span><i style="background:#ff5a74"></i>changed / missing</span>'
+                  '<span><i style="background:#ffb54d"></i>moved / flagged</span>'
+                  '<span><i style="background:#7f93ff"></i>code with no memory yet</span></div>'
+                  '<div id="ginfo" class="ginfo" hidden></div>'
+                  '<p class="dim ghelp">Hover a neuron to see what it is. Click a memory to jump to it, a file to list its memories, '
+                  'or dim code to see how to add a memory there. Drag to move, ⌘/Ctrl + scroll or the buttons to zoom.</p>'
                   '<noscript><p class="dim">The map needs JavaScript; everything it shows is also in the table below.</p></noscript>'
                   f'</div><script type="application/json" id="graph-data">{gjson}</script>')
     else:
-        mapsec = '<div class="pad">' + _empty("The map appears once there's a memory attached to code.") + '</div>'
-    n_files = len({n["id"] for n in graph["nodes"] if n["kind"] == "file"})
+        mapsec = '<div class="pad">' + _empty("No code found to map yet.") + '</div>'
 
     # ---- files map
     files: "OrderedDict[str, List[str]]" = OrderedDict()
@@ -278,8 +292,8 @@ paste it into a terminal inside this repo.</p></div></details>
 <section class="frame"><div class="ph"><span class="n">02</span><span class="t">Status of every memory</span>
 <span class="tag">{len(mems)} memories · {n_anchors} anchors</span></div><div class="pad">{strip}</div></section>
 
-<section class="frame"><div class="ph"><span class="n">03</span><span class="t">Map of memories and code</span>
-<span class="tag">{len(mems)} memories · {n_files} files</span></div>{mapsec}</section>
+<section class="frame"><div class="ph"><span class="n">03</span><span class="t">Neural map of memories and code</span>
+<span class="tag">{len(mems)} memories · {n_files} files · {n_code} functions</span></div>{mapsec}</section>
 
 <section class="frame"><div class="ph"><span class="n">04</span><span class="t">Memories</span>
 <span class="tag">the ones that need a look come first</span></div>{table}</section>
@@ -293,22 +307,28 @@ paste it into a terminal inside this repo.</p></div></details>
 """
 
 
-_RANK = {core.MISSING: 5, core.CHANGED: 4, core.MOVED: 3, core.FLAGGED: 2, core.UNVERIFIED: 1, core.OK: 0}
+_RANK = {core.MISSING: 5, core.CHANGED: 4, core.MOVED: 3, core.FLAGGED: 2, core.UNVERIFIED: 1, core.OK: 0, "code": -1}
 
 
-def graph_data(results) -> dict:
-    """Nodes for memories, the functions/classes/lines they point at, and files; links between them."""
-    nodes, links, seen = [], [], {}
+def graph_data(results, skeleton=()) -> dict:
+    """Nodes for memories, the functions/classes/lines they point at, and files; links between them.
+    `skeleton` adds the rest of the repo's code (status "code") so the map shows what memories sit in."""
+    nodes, links, seen, linked = [], [], {}, set()
 
-    def node(nid: str, kind: str, label: str, status: str, title: str = "") -> None:
+    def node(nid: str, kind: str, label: str, status: str, title: str = "", count: int = 1) -> None:
         if nid in seen:
             n = nodes[seen[nid]]
             if _RANK[status] > _RANK[n["status"]]:
                 n["status"] = status
-            n["count"] += 1
+            n["count"] += count
             return
         seen[nid] = len(nodes)
-        nodes.append({"id": nid, "kind": kind, "label": label, "status": status, "title": title, "count": 1})
+        nodes.append({"id": nid, "kind": kind, "label": label, "status": status, "title": title, "count": count})
+
+    def part(aid: str, fid: str) -> None:
+        if (aid, fid) not in linked:
+            linked.add((aid, fid))
+            links.append([aid, fid, "part"])
 
     for r in results:
         m = r.memory
@@ -322,10 +342,16 @@ def graph_data(results) -> dict:
                 label = a.anchor.symbol or f"lines {a.anchor.start}-{a.anchor.end}"
                 node(aid, "symbol", label, a.status, str(a.anchor))
                 links.append([mid, aid, a.status])
-                if [aid, fid, "part"] not in links:
-                    links.append([aid, fid, "part"])
+                part(aid, fid)
             else:
                 links.append([mid, fid, a.status])
+    for path, symbols in skeleton:
+        fid = "f:" + path
+        node(fid, "file", path, "code", count=0)
+        for sym in symbols:
+            aid = f"a:{path}#{sym}"
+            node(aid, "symbol", sym, "code", f"{path}#{sym}", count=0)
+            part(aid, fid)
     return {"nodes": nodes, "links": links}
 
 
@@ -387,6 +413,15 @@ def serve(root: Path, port: int = 8765, open_browser: bool = True) -> int:
     print("  it updates by itself when memories or code change. Press Ctrl+C to stop.")
     if open_browser:
         webbrowser.open(url)
+
+    def _stop(*_):
+        raise KeyboardInterrupt  # closing the terminal or `kill` stops cleanly too (so `try` removes its clone)
+    import signal
+    for sig in ("SIGTERM", "SIGHUP"):
+        try:
+            signal.signal(getattr(signal, sig), _stop)
+        except (AttributeError, ValueError, OSError):
+            pass  # not available on this OS, or not the main thread
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -398,63 +433,172 @@ def serve(root: Path, port: int = 8765, open_browser: bool = True) -> int:
 
 GRAPH_JS = r"""
 (function(){
-var el=document.getElementById('graph-data'),svg=document.getElementById('graph');if(!el||!svg)return;
-var G=JSON.parse(el.textContent),N=G.nodes,L=G.links,NS='http://www.w3.org/2000/svg',idx={},i,j;
-N.forEach(function(n,k){idx[n.id]=k;});
-var E=L.map(function(l){return{a:idx[l[0]],b:idx[l[1]],s:l[2]};});
+var el=document.getElementById('graph-data'),cv=document.getElementById('graph');
+if(!el||!cv||!cv.getContext)return;
+var G=JSON.parse(el.textContent),N=G.nodes,ctx=cv.getContext('2d'),idx={},i,j,k;
+for(i=0;i<N.length;i++)idx[N[i].id]=i;
+var E=[];G.links.forEach(function(l){if(idx[l[0]]!=null&&idx[l[1]]!=null)E.push({a:idx[l[0]],b:idx[l[1]],s:l[2]});});
 var nb=N.map(function(){return[];});E.forEach(function(e){nb[e.a].push(e.b);nb[e.b].push(e.a);});
-// deterministic start so the map looks the same after every refresh
-function h(str){var x=2166136261;for(var k=0;k<str.length;k++){x^=str.charCodeAt(k);x=Math.imul(x,16777619);}return(x>>>0)/4294967296;}
-var files=N.filter(function(n){return n.kind==='file';}),R=60+files.length*22;
-files.forEach(function(n,k){var t=2*Math.PI*k/files.length;n.x=Math.cos(t)*R;n.y=Math.sin(t)*R;});
-N.forEach(function(n){if(n.kind!=='file'){var t=h(n.id)*6.283,r=R*(n.kind==='memory'?.35:.8);n.x=Math.cos(t)*r;n.y=Math.sin(t)*r;}n.vx=0;n.vy=0;});
-var REST={memory:70,part:34},iters=N.length>220?140:320;
+function h(s){var x=2166136261;for(var q=0;q<s.length;q++){x^=s.charCodeAt(q);x=Math.imul(x,16777619);}return(x>>>0)/4294967296;}
+var RGB={ok:'88,224,162',changed:'255,90,116',missing:'255,90,116',moved:'255,181,77',flagged:'255,181,77',unverified:'160,168,185',code:'127,147,255'};
+function rgb(s){return RGB[s]||RGB.code;}
+N.forEach(function(n){n.lit=n.status!=='code';n.bad=n.lit&&n.status!=='ok'&&n.status!=='unverified';});
+var nMem=N.filter(function(n){return n.kind==='memory';}).length,nFile=N.filter(function(n){return n.kind==='file';}).length;
+var nSym=N.length-nMem-nFile,nBad=N.filter(function(n){return n.kind==='memory'&&n.bad;}).length;
+var st=document.getElementById('gstat');
+if(st)st.textContent=nFile+' files · '+nSym+' functions · '+nMem+' memories'+(nBad?' · '+nBad+' need a look':'')+' · '+E.length+' links';
+
+// ---------- layout: worked out once, the same on every refresh
+var files=N.filter(function(n){return n.kind==='file';}).sort(function(a,b){return(b.lit-a.lit)||(a.id<b.id?-1:1);});
+var R=70+Math.sqrt(N.length)*26;
+files.forEach(function(n,q){var t=6.2832*q/Math.max(files.length,1),r=R*(n.lit?.5:1)*(.8+h(n.id)*.4);n.x=Math.cos(t)*r;n.y=Math.sin(t)*r;});
+var parent={};E.forEach(function(e){if(e.s==='part')parent[e.a]=e.b;});
+N.forEach(function(n,q){if(n.kind==='symbol'){var p=N[parent[q]],t=h(n.id)*6.2832;n.x=(p?p.x:0)+Math.cos(t)*26;n.y=(p?p.y:0)+Math.sin(t)*26;}});
+N.forEach(function(n,q){if(n.kind==='memory'){var sx=0,sy=0,c=0;nb[q].forEach(function(m){if(N[m].x!=null){sx+=N[m].x;sy+=N[m].y;c++;}});
+ var t=h(n.id)*6.2832;n.x=(c?sx/c:0)*.75+Math.cos(t)*38;n.y=(c?sy/c:0)*.75+Math.sin(t)*38;}});
+N.forEach(function(n){if(n.x==null){n.x=0;n.y=0;}n.vx=0;n.vy=0;});
+var M=N.length,iters=M>260?90:M>160?160:300;
 for(var it=0;it<iters;it++){var cool=1-it/iters;
- for(i=0;i<N.length;i++)for(j=i+1;j<N.length;j++){var dx=N[j].x-N[i].x,dy=N[j].y-N[i].y,d2=dx*dx+dy*dy+.01,f=1800/d2,d=Math.sqrt(d2);
-  dx/=d;dy/=d;N[i].vx-=dx*f;N[i].vy-=dy*f;N[j].vx+=dx*f;N[j].vy+=dy*f;}
- E.forEach(function(e){var A=N[e.a],B=N[e.b],dx=B.x-A.x,dy=B.y-A.y,d=Math.sqrt(dx*dx+dy*dy)||1,rest=e.s==='part'?REST.part:REST.memory,f=(d-rest)*.06;
-  dx/=d;dy/=d;A.vx+=dx*f;A.vy+=dy*f;B.vx-=dx*f;B.vy-=dy*f;});
- N.forEach(function(n){n.vx-=n.x*.012;n.vy-=n.y*.012;var sp=Math.sqrt(n.vx*n.vx+n.vy*n.vy),mx=12*cool+1;if(sp>mx){n.vx*=mx/sp;n.vy*=mx/sp;}
-  n.x+=n.vx;n.y+=n.vy;n.vx*=.55;n.vy*=.55;});}
+ for(i=0;i<M;i++){var A=N[i];for(j=i+1;j<M;j++){var B=N[j],dx=B.x-A.x,dy=B.y-A.y,d2=dx*dx+dy*dy+.01;if(d2>90000)continue;
+  var f=((A.lit||B.lit)?2000:850)/d2,d=Math.sqrt(d2);dx/=d;dy/=d;A.vx-=dx*f;A.vy-=dy*f;B.vx+=dx*f;B.vy+=dy*f;}}
+ for(k=0;k<E.length;k++){var e=E[k],P=N[e.a],Q=N[e.b],ex=Q.x-P.x,ey=Q.y-P.y,dd=Math.sqrt(ex*ex+ey*ey)||1,rest=e.s==='part'?24:60,ff=(dd-rest)*.07;
+  ex/=dd;ey/=dd;P.vx+=ex*ff;P.vy+=ey*ff;Q.vx-=ex*ff;Q.vy-=ey*ff;}
+ for(i=0;i<M;i++){var n=N[i],g=n.lit?.018:.009;n.vx-=n.x*g;n.vy-=n.y*g;var sp=Math.sqrt(n.vx*n.vx+n.vy*n.vy),mx=12*cool+1;
+  if(sp>mx){n.vx*=mx/sp;n.vy*=mx/sp;}n.x+=n.vx;n.y+=n.vy;n.vx*=.55;n.vy*=.55;}}
 N.forEach(function(n){n.bx=n.x;n.by=n.y;});
-svg.setAttribute('preserveAspectRatio','xMidYMid meet');
-var COL={ok:'var(--ok)',changed:'var(--stale)',missing:'var(--stale)',moved:'var(--amber)',flagged:'var(--amber)',unverified:'var(--dim)',part:'var(--line2)'};
-function mk(tag,attrs,parent){var e=document.createElementNS(NS,tag);for(var k in attrs)e.setAttribute(k,attrs[k]);(parent||svg).appendChild(e);return e;}
-var gl=mk('g',{'class':'links'}),gn=mk('g',{'class':'nodes'});
-var lines=E.map(function(e){return mk('line',{x1:N[e.a].x,y1:N[e.a].y,x2:N[e.b].x,y2:N[e.b].y,stroke:COL[e.s]||COL.part,'class':e.s==='part'?'lp':'lm'},gl);});
-var tip=document.getElementById('gtip'),wrap=svg.parentNode;
-var els=N.map(function(n,k){var g=mk('g',{'class':'n n-'+n.kind+(n.status!=='ok'&&n.status!=='unverified'?' bad':''),transform:'translate('+n.x+','+n.y+')',tabindex:'0'},gn);
- var c=COL[n.status]||COL.ok;
- if(n.kind==='memory'){if(n.status!=='ok')mk('circle',{r:13,'class':'ring',stroke:c},g);mk('circle',{r:7,fill:c},g);}
- else if(n.kind==='file'){var sz=9+Math.min(n.count,6)*1.5;mk('rect',{x:-sz/2,y:-sz/2,width:sz,height:sz,fill:'var(--panel)',stroke:c,'stroke-width':2.2},g);
-  var base=n.label.split('/').pop();mk('text',{y:sz/2+14,'text-anchor':'middle','class':'lf'},g).textContent=base;}
- else{mk('circle',{r:4,fill:'var(--panel)',stroke:c,'stroke-width':2},g);mk('text',{x:7,y:3.5,'class':'ls'},g).textContent=n.label;}
- mk('title',{},g).textContent=(n.kind==='memory'?n.title:n.kind==='file'?n.label:n.title)+' ('+n.status+')';
- return g;});
-// stretch the layout sideways to fill the panel (labels keep their size)
-function place(){var x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;N.forEach(function(n){x0=Math.min(x0,n.bx);y0=Math.min(y0,n.by);x1=Math.max(x1,n.bx);y1=Math.max(y1,n.by);});
- var w=svg.clientWidth||800,hh=svg.clientHeight||440,padx=80,pady=40,bw=Math.max(x1-x0,1),bh=Math.max(y1-y0,1);
- var sx=Math.max(1,Math.min(3,((w/hh)*(bh+2*pady)-2*padx)/bw));
- N.forEach(function(n){n.x=(n.bx-x0)*sx;n.y=n.by-y0;});
- els.forEach(function(g,k){g.setAttribute('transform','translate('+N[k].x+','+N[k].y+')');});
- lines.forEach(function(l,m){var e=E[m];l.setAttribute('x1',N[e.a].x);l.setAttribute('y1',N[e.a].y);l.setAttribute('x2',N[e.b].x);l.setAttribute('y2',N[e.b].y);});
- svg.setAttribute('viewBox',(-padx)+' '+(-pady)+' '+(bw*sx+2*padx)+' '+(bh+2*pady+14));}
-place();var rt;window.addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(place,120);});
-function focus(k){els.forEach(function(g,m){g.classList.toggle('fade',k!==null&&m!==k&&nb[k].indexOf(m)<0);});
- lines.forEach(function(l,m){var e=E[m];l.classList.toggle('fade',k!==null&&e.a!==k&&e.b!==k);});}
-function show(k,ev){var n=N[k];if(!tip)return;var kind={memory:'memory',file:'file',symbol:'code'}[n.kind];
- tip.innerHTML='';var b=document.createElement('b');b.textContent=n.kind==='memory'?n.title:n.label;tip.appendChild(b);
- var d=document.createElement('div');d.className='dim';d.textContent=kind+' · '+n.status+(n.kind==='file'?' · '+n.count+' link'+(n.count>1?'s':''):n.kind==='memory'?' · '+n.label:'');tip.appendChild(d);
- tip.hidden=false;var r=wrap.getBoundingClientRect(),gr=els[k].getBoundingClientRect(),x=gr.left-r.left+gr.width/2,y=gr.top-r.top;
- tip.style.left=Math.max(4,Math.min(x-tip.offsetWidth/2,r.width-tip.offsetWidth-4))+'px';tip.style.top=Math.max(4,y-tip.offsetHeight-8)+'px';}
-function hide(){focus(null);if(tip)tip.hidden=true;}
-function act(k){var n=N[k];
- if(n.kind==='memory'){var row=document.getElementById('m-'+n.label);if(row){if(row.hidden){var all=document.querySelector('[data-mode="all"]');if(all)all.click();var q=document.getElementById('q');if(q&&q.value){q.value='';q.dispatchEvent(new Event('input'));}}
-  row.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'center'});row.classList.remove('flash');void row.offsetWidth;row.classList.add('flash');}}
- else{var q2=document.getElementById('q');if(q2){q2.value=n.kind==='file'?n.label:n.title;q2.dispatchEvent(new Event('input'));q2.scrollIntoView({behavior:'smooth',block:'center'});}}}
-els.forEach(function(g,k){g.addEventListener('mouseenter',function(e){focus(k);show(k,e);});g.addEventListener('mouseleave',hide);
- g.addEventListener('focus',function(e){focus(k);show(k,e);});g.addEventListener('blur',hide);
- g.addEventListener('click',function(){act(k);});g.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();act(k);}});});
+E.forEach(function(e,q){e.bend=(h('b'+q)-.5)*.55;});
+
+// ---------- signals travelling along the links
+var S=[];
+E.forEach(function(e,q){var A=N[e.a],B=N[e.b],mem=e.s!=='part',lit=A.lit||B.lit;
+ var c=mem?2:(lit?1:(h('p'+q)<.3?1:0));
+ for(var z=0;z<c;z++)S.push({e:q,t:h('t'+q+z),v:(mem?(e.s==='ok'?.0032:.0085):(lit?.0024:.0016))*(.7+h('v'+q+z)*.6)});});
+if(S.length>600)S.length=600;
+
+// ---------- glow sprites (much faster than shadowBlur)
+var SP={};
+function spr(c){if(SP[c])return SP[c];var s=document.createElement('canvas'),z=64;s.width=s.height=z;var g=s.getContext('2d'),gr=g.createRadialGradient(32,32,0,32,32,32);
+ gr.addColorStop(0,'rgba('+c+',1)');gr.addColorStop(.18,'rgba('+c+',.55)');gr.addColorStop(.45,'rgba('+c+',.14)');gr.addColorStop(1,'rgba('+c+',0)');
+ g.fillStyle=gr;g.fillRect(0,0,z,z);return SP[c]=s;}
+
+// ---------- camera
+var W=0,H=0,dpr=1,cam={s:1,x:0,y:0},home={s:1,x:0,y:0},bg=null,hover=null,sel=null;
+function fit(){var x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;N.forEach(function(n){x0=Math.min(x0,n.bx);y0=Math.min(y0,n.by);x1=Math.max(x1,n.bx);y1=Math.max(y1,n.by);});
+ var bw=Math.max(x1-x0,1),bh=Math.max(y1-y0,1),sx=Math.max(1,Math.min(2.4,(W/H)*bh/bw));
+ N.forEach(function(n){n.x=(n.bx-x0)*sx;n.y=n.by-y0;});bw*=sx;
+ var s=Math.min((W-90)/bw,(H-70)/bh);s=Math.max(.15,Math.min(s,3));
+ home={s:s,x:W/2-bw*s/2,y:H/2-bh*s/2+4};cam={s:home.s,x:home.x,y:home.y};}
+function makeBg(){bg=document.createElement('canvas');bg.width=W*dpr;bg.height=H*dpr;var g=bg.getContext('2d');g.scale(dpr,dpr);
+ var gr=g.createRadialGradient(W*.5,H*.45,0,W*.5,H*.5,Math.max(W,H)*.75);gr.addColorStop(0,'#0f1a36');gr.addColorStop(.55,'#070c1a');gr.addColorStop(1,'#03050b');
+ g.fillStyle=gr;g.fillRect(0,0,W,H);
+ g.fillStyle='rgba(130,150,220,.07)';for(var x=13;x<W;x+=26)for(var y=13;y<H;y+=26)g.fillRect(x,y,1,1);
+ for(var q=0;q<Math.round(W*H/5200);q++){var a=h('s'+q),b=h('y'+q),c=h('z'+q);g.fillStyle='rgba(200,210,255,'+(.08+c*.35)+')';
+  g.beginPath();g.arc(a*W,b*H,c<.92?.6:1.3,0,6.2832);g.fill();}}
+function resize(){var r=cv.getBoundingClientRect();if(!r.width)return;W=r.width;H=r.height;dpr=Math.min(window.devicePixelRatio||1,2);
+ cv.width=Math.round(W*dpr);cv.height=Math.round(H*dpr);fit();makeBg();kick();}
+
+// ---------- drawing
+function rad(n){var z=Math.max(.75,Math.min(2.2,Math.sqrt(cam.s/home.s)));
+ if(n.kind==='memory')return 5.6*z;if(n.kind==='file')return(n.lit?6.5+Math.min(n.count,6)*.8:3.6)*z;return(n.lit?3.3:2)*z;}
+function ctrl(e,A,B){var mx=(A.sx+B.sx)/2,my=(A.sy+B.sy)/2;return[mx-(B.sy-A.sy)*e.bend,my+(B.sx-A.sx)*e.bend];}
+function qp(A,c,B,t){var u=1-t;return[u*u*A.sx+2*u*t*c[0]+t*t*B.sx,u*u*A.sy+2*u*t*c[1]+t*t*B.sy];}
+var reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches,now=0;
+function draw(){
+ ctx.setTransform(dpr,0,0,dpr,0,0);ctx.globalCompositeOperation='source-over';ctx.globalAlpha=1;
+ if(bg)ctx.drawImage(bg,0,0,W,H);
+ var focus=hover!=null?hover:sel,near=null;
+ if(focus!=null){near={};near[focus]=1;nb[focus].forEach(function(m){near[m]=1;});}
+ N.forEach(function(n){n.sx=n.x*cam.s+cam.x;n.sy=n.y*cam.s+cam.y;});
+ ctx.globalCompositeOperation='lighter';ctx.lineCap='round';
+ E.forEach(function(e){var A=N[e.a],B=N[e.b],mem=e.s!=='part',c=ctrl(e,A,B),on=!near||(near[e.a]&&near[e.b]);
+  var col=mem?rgb(e.s):(A.lit||B.lit?'150,170,255':'110,130,220'),al=mem?.5:(A.lit||B.lit?.22:.11);
+  if(near)al=on?Math.min(1,al*2.2):al*.12;
+  ctx.strokeStyle='rgba('+col+','+al+')';ctx.lineWidth=mem?1.4:.9;
+  ctx.beginPath();ctx.moveTo(A.sx,A.sy);ctx.quadraticCurveTo(c[0],c[1],B.sx,B.sy);ctx.stroke();});
+ if(!reduce)S.forEach(function(p){var e=E[p.e],A=N[e.a],B=N[e.b],mem=e.s!=='part',c=ctrl(e,A,B),on=!near||(near[e.a]&&near[e.b]);
+  var t=(mem&&e.s!=='ok')?1-p.t:p.t,pt=qp(A,c,B,t),sz=mem?(e.s==='ok'?11:14):(A.lit||B.lit?8:6);
+  ctx.globalAlpha=(on?1:.1)*(mem?.95:(A.lit||B.lit?.6:.35))*Math.sin(Math.PI*p.t);
+  ctx.drawImage(spr(mem?rgb(e.s):'150,170,255'),pt[0]-sz/2,pt[1]-sz/2,sz,sz);});
+ ctx.globalAlpha=1;
+ N.forEach(function(n,q){var r=rad(n),on=!near||near[q],g=n.kind==='memory'?r*7:n.lit?r*6:r*4.5;
+  ctx.globalAlpha=(on?1:.1)*(n.lit?(n.kind==='memory'?.75:.5):.28)*(n.bad?.85+.15*Math.sin(now/260+q):1);
+  ctx.drawImage(spr(rgb(n.status)),n.sx-g/2,n.sy-g/2,g,g);
+  if(n.bad&&n.kind==='memory'&&!reduce){var ph=((now/1700)+h(n.id))%1;ctx.globalAlpha=(on?1:.15)*(1-ph)*.9;ctx.strokeStyle='rgba('+rgb(n.status)+',1)';
+   ctx.lineWidth=1.6;ctx.beginPath();ctx.arc(n.sx,n.sy,r+4+ph*22,0,6.2832);ctx.stroke();}});
+ ctx.globalCompositeOperation='source-over';
+ N.forEach(function(n,q){var r=rad(n),on=!near||near[q],c=rgb(n.status);ctx.globalAlpha=on?1:.18;
+  if(n.kind==='memory'){var gr=ctx.createRadialGradient(n.sx-r*.3,n.sy-r*.3,0,n.sx,n.sy,r);gr.addColorStop(0,'#ffffff');gr.addColorStop(.45,'rgba('+c+',1)');gr.addColorStop(1,'rgba('+c+',.85)');
+   ctx.fillStyle=gr;ctx.beginPath();ctx.arc(n.sx,n.sy,r,0,6.2832);ctx.fill();}
+  else if(n.kind==='file'){ctx.fillStyle='#070b16';ctx.strokeStyle='rgba('+c+','+(n.lit?1:.7)+')';ctx.lineWidth=n.lit?2:1.2;
+   ctx.beginPath();ctx.arc(n.sx,n.sy,r,0,6.2832);ctx.fill();ctx.stroke();ctx.fillStyle='rgba('+c+','+(n.lit?.9:.5)+')';ctx.beginPath();ctx.arc(n.sx,n.sy,r*.38,0,6.2832);ctx.fill();}
+  else{ctx.fillStyle='rgba('+c+','+(n.lit?1:.55)+')';ctx.beginPath();ctx.arc(n.sx,n.sy,r,0,6.2832);ctx.fill();}
+  if(q===sel){ctx.strokeStyle='#ff7a1a';ctx.lineWidth=2;ctx.beginPath();ctx.arc(n.sx,n.sy,r+5,0,6.2832);ctx.stroke();}});
+ // labels
+ var zoom=cam.s/home.s,few=N.length<70;
+ ctx.font='600 11px "JetBrains Mono",ui-monospace,monospace';ctx.textAlign='center';ctx.textBaseline='top';ctx.lineJoin='round';
+ N.forEach(function(n,q){var show,on=!near||near[q];
+  if(n.kind==='file')show=n.lit||few||zoom>1.5||(near&&near[q]);
+  else if(n.kind==='symbol')show=(near&&near[q])||zoom>2.3||(few&&n.lit);
+  else show=near&&near[q]&&q!==focus;
+  if(!show||(!on&&near))return;
+  var text=n.kind==='file'?n.label.split('/').pop():n.kind==='memory'?n.label:n.label.split('.').pop(),r=rad(n);
+  ctx.font=(n.kind==='file'?'700 11px':'500 10px')+' "JetBrains Mono",ui-monospace,monospace';
+  ctx.globalAlpha=n.lit||near?1:.7;ctx.lineWidth=3.5;ctx.strokeStyle='rgba(3,5,11,.9)';ctx.strokeText(text,n.sx,n.sy+r+5);
+  ctx.fillStyle=n.kind==='file'?'#ece4d3':n.lit?'rgba('+rgb(n.status)+',1)':'#9aa6d6';ctx.fillText(text,n.sx,n.sy+r+5);});
+ ctx.globalAlpha=1;}
+var raf=0,last=0,visible=true;
+function frame(ts){raf=0;if(!visible||document.hidden)return;var dt=last?Math.min((ts-last)/16.7,3):1;last=ts;now=ts;
+ S.forEach(function(p){p.t+=p.v*dt;if(p.t>1)p.t-=1;});draw();raf=requestAnimationFrame(frame);}
+function kick(){if(reduce){draw();return;}if(!raf){last=0;raf=requestAnimationFrame(frame);}}
+if('IntersectionObserver' in window)new IntersectionObserver(function(es){visible=es[0].isIntersecting;if(visible)kick();}).observe(cv);
+document.addEventListener('visibilitychange',kick);
+
+// ---------- interaction
+var tip=document.getElementById('gtip'),info=document.getElementById('ginfo'),wrap=cv.parentNode;
+function hit(mx,my){var best=null,bd=1e9;N.forEach(function(n,q){var r=rad(n)+7,dx=n.sx-mx,dy=n.sy-my,d=dx*dx+dy*dy;if(d<r*r&&d<bd){bd=d;best=q;}});return best;}
+function kindName(n){return n.kind==='memory'?'memory':n.kind==='file'?'file':'function / class';}
+function showTip(q){var n=N[q];if(!tip)return;tip.innerHTML='';var b=document.createElement('b');b.textContent=n.kind==='memory'?n.title:n.label;tip.appendChild(b);
+ var d=document.createElement('div');d.className='dim';
+ d.textContent=kindName(n)+' · '+(n.lit?n.status:'no memory yet')+(n.kind==='memory'?' · '+n.label:n.count?' · '+n.count+' memor'+(n.count>1?'ies':'y'):'');tip.appendChild(d);
+ tip.hidden=false;var cr=cv.getBoundingClientRect(),wr=wrap.getBoundingClientRect(),x=cr.left-wr.left+n.sx,y=cr.top-wr.top+n.sy;
+ tip.style.left=Math.max(4,Math.min(x-tip.offsetWidth/2,wr.width-tip.offsetWidth-4))+'px';tip.style.top=Math.max(4,y-tip.offsetHeight-rad(n)-10)+'px';}
+function hideTip(){if(tip)tip.hidden=true;}
+function cmdBox(text){var c=document.createElement('div');c.className='cmd';var code=document.createElement('code');code.textContent=text;
+ var b=document.createElement('button');b.type='button';b.textContent='copy';b.setAttribute('data-copy',text);b.setAttribute('aria-label','Copy command');c.appendChild(code);c.appendChild(b);return c;}
+function showInfo(q){if(!info)return;var n=N[q];info.innerHTML='';var p=document.createElement('p');
+ var where=n.kind==='file'?n.label:n.title;var b=document.createElement('b');b.textContent=where;p.appendChild(b);
+ p.appendChild(document.createTextNode(' has no memory yet. Know something about it that isn’t obvious from the code? Save it:'));info.appendChild(p);
+ info.appendChild(cmdBox('anchormem add "<what is true>" --anchor '+where+' --body "<why it matters>"'));info.hidden=false;}
+function search(v){var q=document.getElementById('q');if(!q)return;q.value=v;q.dispatchEvent(new Event('input'));
+ var row=document.querySelector('tr[data-tags]:not([hidden])');if(row)row.scrollIntoView({behavior:reduce?'auto':'smooth',block:'center'});}
+function act(q){var n=N[q];sel=q;if(info)info.hidden=true;
+ if(n.kind==='memory'){var row=document.getElementById('m-'+n.label);if(row){var qq=document.getElementById('q');
+   if(row.hidden){var all=document.querySelector('[data-mode="all"]');if(all)all.click();if(qq&&qq.value){qq.value='';qq.dispatchEvent(new Event('input'));}}
+   row.scrollIntoView({behavior:reduce?'auto':'smooth',block:'center'});row.classList.remove('flash');void row.offsetWidth;row.classList.add('flash');}}
+ else if(!n.lit)showInfo(q);
+ else search(n.kind==='file'?n.label:n.title);
+ kick();}
+var drag=null,moved=false;
+function pos(e){var r=cv.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top];}
+cv.addEventListener('pointerdown',function(e){drag={x:e.clientX,y:e.clientY,cx:cam.x,cy:cam.y};moved=false;});
+window.addEventListener('pointerup',function(e){var d=drag;drag=null;cv.classList.remove('grab');if(d&&!moved&&e.target===cv){var p=pos(e),q=hit(p[0],p[1]);
+ if(q!=null){act(q);if(e.pointerType!=='mouse')showTip(q);}else{sel=null;hideTip();if(info)info.hidden=true;kick();}}});
+cv.addEventListener('pointermove',function(e){var p=pos(e);
+ if(drag){var dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>4)moved=true;
+  if(moved){cam.x=drag.cx+dx;cam.y=drag.cy+dy;cv.classList.add('grab');hideTip();hover=null;kick();return;}}
+ if(e.pointerType!=='mouse')return;var q=hit(p[0],p[1]);cv.style.cursor=q!=null?'pointer':'grab';
+ if(q!==hover){hover=q;if(q==null)hideTip();else showTip(q);kick();}});
+cv.addEventListener('pointerleave',function(){if(!drag&&hover!=null){hover=null;hideTip();kick();}});
+function zoomAt(mx,my,f){var ns=Math.max(home.s*.35,Math.min(home.s*8,cam.s*f));f=ns/cam.s;cam.x=mx-(mx-cam.x)*f;cam.y=my-(my-cam.y)*f;cam.s=ns;hideTip();kick();}
+cv.addEventListener('wheel',function(e){if(!(e.ctrlKey||e.metaKey))return;e.preventDefault();var p=pos(e);zoomAt(p[0],p[1],Math.exp(-e.deltaY*.01));},{passive:false});
+cv.addEventListener('dblclick',function(e){var p=pos(e);zoomAt(p[0],p[1],1.8);});
+wrap.addEventListener('click',function(e){var b=e.target.closest('[data-z]');if(!b)return;var z=b.getAttribute('data-z');
+ if(z==='fit'){cam={s:home.s,x:home.x,y:home.y};hideTip();kick();}else zoomAt(W/2,H/2,z==='in'?1.4:1/1.4);});
+cv.addEventListener('keydown',function(e){var s=40;if(e.key==='+'||e.key==='=')zoomAt(W/2,H/2,1.3);else if(e.key==='-')zoomAt(W/2,H/2,1/1.3);
+ else if(e.key==='0'){cam={s:home.s,x:home.x,y:home.y};kick();}else if(e.key==='ArrowLeft')cam.x+=s;else if(e.key==='ArrowRight')cam.x-=s;
+ else if(e.key==='ArrowUp')cam.y+=s;else if(e.key==='ArrowDown')cam.y-=s;else return;e.preventDefault();kick();});
+var rt;window.addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(resize,120);});
+resize();
 })();
 """
 
@@ -578,22 +722,24 @@ footer .cmd{margin:0}
 @keyframes pulse{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){#livedot{animation:none}}
 .map{position:relative;padding:0 10px 10px}
-#graph{display:block;width:100%;height:440px;background:var(--panel2);border:1px solid var(--line)}
-#graph line{stroke-width:1.6;opacity:.75;transition:opacity .15s} #graph line.lp{stroke-dasharray:3 3;opacity:.6}
-#graph .n{cursor:pointer;transition:opacity .15s} #graph .n:focus{outline:none} #graph .n:focus circle,#graph .n:focus rect{stroke:var(--accent);stroke-width:3}
-#graph .n.fade,#graph line.fade{opacity:.1}
-#graph text{font-family:var(--mono);fill:var(--fg);pointer-events:none} .lf{font-size:11px;font-weight:700} .ls{font-size:9.5px;fill:var(--dim)!important}
-#graph .ring{fill:none;stroke-width:2;transform-box:fill-box;transform-origin:center;animation:ring 1.8s ease-out infinite}
-@keyframes ring{0%{opacity:.9;transform:scale(.6)}100%{opacity:0;transform:scale(1.6)}}
-@media (prefers-reduced-motion:reduce){#graph .ring{animation:none;opacity:.6}}
-.gtip{position:absolute;z-index:2;max-width:280px;pointer-events:none;background:var(--panel);border:1px solid var(--accent);padding:6px 8px;font-size:11px;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+#graph{display:block;width:100%;height:520px;background:#03050b;border:1px solid #1a2435;cursor:grab;touch-action:pan-y;outline:none}
+#graph.grab{cursor:grabbing} #graph:focus-visible{box-shadow:0 0 0 2px var(--accent)}
+.ghud{position:absolute;left:20px;right:20px;top:10px;display:flex;justify-content:space-between;align-items:flex-start;gap:10px;pointer-events:none}
+#gstat{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#9aa6d6;background:rgba(3,5,11,.6);padding:4px 8px;border:1px solid rgba(127,147,255,.25)}
+.gctl{display:flex;gap:3px;pointer-events:auto}
+.gctl button{font:inherit;font-size:12px;min-width:30px;height:28px;cursor:pointer;color:#ece4d3;background:rgba(10,15,30,.75);border:1px solid rgba(127,147,255,.35)}
+.gctl button:hover{border-color:#ff7a1a;color:#ff7a1a} .gctl button:focus-visible{outline:2px solid #ff7a1a}
+.gtip{position:absolute;z-index:2;max-width:300px;pointer-events:none;background:rgba(6,10,20,.94);color:#ece4d3;border:1px solid rgba(127,147,255,.5);padding:6px 9px;font-size:11px;box-shadow:0 0 24px rgba(127,147,255,.25)}
+.gtip .dim{color:#9aa6d6}
 .gkey{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:10.5px;color:var(--dim)}
 .gkey span{display:flex;align-items:center;gap:6px} .gkey i{width:9px;height:9px;display:block;border-radius:50%}
-.gkey .k-m{background:var(--fg)} .gkey .k-s{border:2px solid var(--fg);width:8px;height:8px} .gkey .k-f{border:2px solid var(--fg);border-radius:0}
+.gkey .k-m{background:radial-gradient(circle at 35% 35%,#fff,#58e0a2)} .gkey .k-s{background:#7f93ff;width:6px;height:6px}
+.gkey .k-f{border:2px solid #7f93ff;background:transparent}
+.ginfo{margin-top:8px;padding:8px 10px;border:1px solid var(--line);border-left:3px solid #7f93ff;background:var(--panel2)} .ginfo p{margin:0 0 4px}
 .ghelp{margin:6px 0 0;font-size:10.5px}
 tr.flash td{animation:flash 1.6s ease-out}
 @keyframes flash{0%{background:color-mix(in srgb,var(--accent) 35%,transparent)}100%{background:transparent}}
-@media (max-width:600px){#graph{height:340px}}
+@media (max-width:600px){#graph{height:400px}.ghud{left:16px;right:16px}#gstat{font-size:9px}}
 @media (max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}header{grid-template-columns:auto minmax(0,1fr)}.stats{grid-column:1/-1}}
 @media (max-width:600px){.grid{grid-template-columns:minmax(0,1fr)}.stats{gap:14px}.step{grid-template-columns:minmax(0,1fr);gap:4px}
 .lg{grid-template-columns:auto auto;justify-content:start}.lg .dim{grid-column:1/-1}.verdict{font-size:16px}}
