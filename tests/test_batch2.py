@@ -375,7 +375,7 @@ class TestCodeMapAndSeed(RepoCase):
         mems = {str(m.anchors[0][0]): m for m in store.load_all(self.root)}
         self.assertEqual(set(mems), {"src/db/pool.py#get_pool", "src/billing/invoice.ts#lineTotal"})
         m = mems["src/db/pool.py#get_pool"]
-        self.assertEqual(m.title, "capped at 10 because the hosted plan allows 25 connections across 2 workers")
+        self.assertEqual(m.title, "Capped at 10 because the hosted plan allows 25 connections across 2 workers")
         self.assertTrue(m.unconfirmed_agent)
         self.assertIn("WHY comment in src/db/pool.py, line 2", m.body)
         self.assertEqual(self.check_json()[0], 0)
@@ -389,6 +389,43 @@ class TestCodeMapAndSeed(RepoCase):
         for src, want in cases.items():
             self.assertEqual(_clone_name(src), want, src)
 
+    def test_seed_finds_real_world_explanations_and_skips_noise(self):
+        self.write("src/http/models.py", "\n".join([
+            "# Copyright 2024 Someone. Licensed under the Apache License because lawyers must.",
+            "import os",
+            "",
+            "# Import encoding now, to avoid an implicit import later inside a thread.",
+            "import encodings",
+            "",
+            "# Keep the cache small because the hosted plan only gives us 256 MB of memory.",
+            "def build_cache():",
+            "    return {}",
+            "",
+            "class Request:",
+            "    def prepare(self):",
+            "        # Note that prepare_auth must be last so OAuth sees a fully prepared request.",
+            "        self.prepare_auth()",
+            "        # This must go after prepare_auth, otherwise hooks added by auth are lost.",
+            "        self.prepare_hooks()",
+            "        # XXX not implemented yet, because nobody needed it",
+            "        # pylint: disable=no-member because of the metaclass magic here",
+            "        # x = compute(a, b)  # must stay commented out until the migration",
+            "        # short",
+            "        return self",
+        ]) + "\n")
+        self.write("tests/test_models.py", "def test_x():\n    # This must never be stored because tests are not the source of truth.\n    pass\n")
+        found = {(f.tag, str(f.anchor), f.title) for f in seed.scan(self.root)}
+        self.assertEqual(found, {
+            ("NOTE", "src/http/models.py#Request.prepare", "prepare_auth must be last so OAuth sees a fully prepared request"),
+            ("COMMENT", "src/http/models.py#Request.prepare", "This must go after prepare_auth, otherwise hooks added by auth are lost"),
+            ("COMMENT", "src/http/models.py#build_cache", "Keep the cache small because the hosted plan only gives us 256 MB of memory"),
+        })
+        self.assertEqual({f.tag for f in seed.scan(self.root, reasons=False)}, {"NOTE"})
+
+    def test_short_first_sentence_takes_the_next_one(self):
+        f = seed.Found("a.py", 1, "COMMENT", "If length exists, set it. Otherwise, we fall back to chunked encoding. More.", None)
+        self.assertEqual(f.title, "If length exists, set it. Otherwise, we fall back to chunked encoding")
+
     def test_try_clones_seeds_and_cleans_up(self):
         self.write("src/db/pool.py", "def get_pool():\n    # IMPORTANT: never raise above 10 without upgrading the plan\n    return 10\n")
         self.commit("code")
@@ -401,7 +438,7 @@ class TestCodeMapAndSeed(RepoCase):
         with mock.patch.object(dashboard, "serve", fake_serve):
             code, out, err = self.run_cli("try", str(self.root), "--no-open")
         self.assertEqual(code, 0, err)
-        self.assertEqual(seen["mems"], ["never raise above 10 without upgrading the plan"])
+        self.assertEqual(seen["mems"], ["Never raise above 10 without upgrading the plan"])
         self.assertFalse(seen["root"].exists())               # the temporary clone is gone
         self.assertFalse((self.root / ".anchormem").exists())  # the original repo is untouched
         code, _, err = self.run_cli("try", str(self.root / "nope"), "--no-open")

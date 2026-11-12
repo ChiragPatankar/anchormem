@@ -606,12 +606,12 @@ def cmd_promote(args) -> int:
     return 0
 
 
-def _seed(root: Path, limit: int, apply: bool, quiet: bool = False) -> int:
+def _seed(root: Path, limit: int, apply: bool, quiet: bool = False, reasons: bool = True) -> int:
     have = {m.title.strip().lower() for m in store.load_all(root) + store.load_retired(root)}
-    found = [f for f in seed.scan(root) if f.title.strip().lower() not in have]
+    found = [f for f in seed.scan(root, reasons=reasons) if f.title.strip().lower() not in have]
     if not found:
         if not quiet:
-            print("No new NOTE / WHY / HACK / IMPORTANT / WARNING comments found to turn into memories.")
+            print("No new explanatory comments found to turn into memories.")
         return 0
     shown = found[:limit]
     saved = 0
@@ -625,7 +625,8 @@ def _seed(root: Path, limit: int, apply: bool, quiet: bool = False) -> int:
         except (FileMissing, TargetMissing):
             continue
         mid = store.unique_id(root, store.slugify(f.title))
-        body = f"{f.text}\n\nFrom a {f.tag} comment in {f.path}, line {f.line}."
+        kind = "a comment" if f.tag == "COMMENT" else f"a {f.tag} comment"
+        body = f"{f.text}\n\nFrom {kind} in {f.path}, line {f.line}."
         mem = Memory(id=mid, title=f.title, body=body, anchors=[(f.anchor, fp)], origin="agent",
                      created=today(), verified=today(), commit=gitutil.head(root) or "")
         store.save(root, mem)
@@ -644,7 +645,7 @@ def _seed(root: Path, limit: int, apply: bool, quiet: bool = False) -> int:
 
 
 def cmd_seed(args) -> int:
-    return _seed(store.require_root(Path.cwd()), args.limit, args.apply)
+    return _seed(store.require_root(Path.cwd()), args.limit, args.apply, reasons=not args.tagged_only)
 
 
 def _clone_name(src: str) -> str:
@@ -966,9 +967,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-open", action="store_true", help="never open the browser")
     s.set_defaults(fn=cmd_dashboard)
 
-    s = sub.add_parser("seed", help="turn NOTE / WHY / HACK / IMPORTANT / WARNING comments into memories")
+    s = sub.add_parser("seed", help="turn comments that explain the code (NOTE:, WHY:, \"because…\") into memories")
     s.add_argument("--apply", action="store_true", help="save them (without it, only lists what it found)")
     s.add_argument("--limit", type=int, default=50, help="at most this many (default 50)")
+    s.add_argument("--tagged-only", action="store_true", help="only NOTE / WHY / HACK / ... comments, not other comments that give a reason")
     s.set_defaults(fn=cmd_seed)
 
     s = sub.add_parser("try", help="try anchormem on any git repo: clone it to a temp folder, seed it, open the live dashboard")

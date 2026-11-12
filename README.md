@@ -100,7 +100,12 @@ anchormem seed            # lists what it found
 anchormem seed --apply    # saves them
 ```
 
-Comments tagged `NOTE:`, `WHY:`, `HACK:`, `IMPORTANT:`, `WARNING:`, `SAFETY:`, `INVARIANT:` or `CAUTION:` usually say something true and non-obvious about the code next to them, which is what a memory is. `seed` turns each one into a memory anchored to the function it sits in (or the file), so it's flagged when that code changes. They're saved as agent-written and not yet approved, so check them with `anchormem confirm`. `TODO` and `FIXME` are skipped: they're tasks, not facts. Running it again doesn't add duplicates.
+Most repos already explain their tricky parts in comments. `seed` turns those into memories, each anchored to the function it sits in, so it's flagged when that code changes. It picks up two kinds:
+
+- **Tagged comments**, in any case: `NOTE:`, `Note that …`, `WHY:`, `HACK:`, `IMPORTANT:`, `WARNING:`, `SAFETY:`, `INVARIANT:`, `CAUTION:`, `NB:`.
+- **Comments that give a reason**: "… because …", "must go after …", "never …", "to avoid …", "otherwise …", "workaround …", if they're long enough to say something and sit inside or right above a function. `--tagged-only` turns these off.
+
+It skips to-dos (`TODO`, `FIXME`, `XXX`), license headers, commented-out code, linter directives, and untagged comments in docs and tests. Everything is saved as agent-written and not yet approved, so check the memories with `anchormem confirm`. Running it again doesn't add duplicates. On [psf/requests](https://github.com/psf/requests), for example, it finds about 40, such as "This MUST go after prepare_auth. Authenticators could add a hook", anchored to `PreparedRequest.prepare`.
 
 ## Anchors
 
@@ -203,7 +208,7 @@ Notes are appended to `.anchormem/inbox.jsonl`. `anchormem promote` groups them 
 | `anchormem lint [--strict] [--json]` | Checks the memories themselves for problems. |
 | `anchormem` / `anchormem status` | Where things stand and what to run next. |
 | `anchormem dashboard [--serve] [-o FILE] [--open\|--no-open]` | Opens a page with what to do next, every memory and its status, activity, handoffs, notes and lint. `--serve` keeps it live. |
-| `anchormem seed [--apply] [--limit N]` | Turns NOTE / WHY / HACK / IMPORTANT / WARNING comments into memories. |
+| `anchormem seed [--apply] [--limit N] [--tagged-only]` | Turns comments that explain the code into memories. |
 | `anchormem try <git-url-or-folder> [--keep]` | Clones a repo to a temp folder, seeds it and opens the live dashboard. |
 | `anchormem doctor` | Checks the setup: memory files parse, agent rules are current, hooks, PATH, gitignore, git. |
 | `anchormem hooks install\|remove [--local] [--dry-run]` | Installs or removes the Claude Code hooks. |

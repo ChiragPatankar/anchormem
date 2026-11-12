@@ -549,7 +549,7 @@ function draw(){
 var raf=0,last=0,visible=true;
 function frame(ts){raf=0;if(!visible||document.hidden)return;var dt=last?Math.min((ts-last)/16.7,3):1;last=ts;now=ts;
  S.forEach(function(p){p.t+=p.v*dt;if(p.t>1)p.t-=1;});draw();raf=requestAnimationFrame(frame);}
-function kick(){if(reduce){draw();return;}if(!raf){last=0;raf=requestAnimationFrame(frame);}}
+function kick(){if(reduce||!raf)draw();if(!reduce&&!raf){last=0;raf=requestAnimationFrame(frame);}}  // draw now, so the map is never blank while waiting for a frame
 if('IntersectionObserver' in window)new IntersectionObserver(function(es){visible=es[0].isIntersecting;if(visible)kick();}).observe(cv);
 document.addEventListener('visibilitychange',kick);
 
