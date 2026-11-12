@@ -382,6 +382,13 @@ class TestCodeMapAndSeed(RepoCase):
         _, out, _ = self.run_cli("seed", "--apply")
         self.assertIn("No new", out)  # running it again doesn't duplicate
 
+    def test_clone_name_is_a_plain_folder_name_for_any_source(self):
+        from anchormem.cli import _clone_name
+        cases = {"https://github.com/psf/requests.git/": "requests", "git@github.com:owner/my-repo.git": "my-repo",
+                 "C:\\Users\\me\\Temp\\tmpabc": "tmpabc", "/home/me/proj/": "proj", "..": "repo", "https://x/a b": "a-b"}
+        for src, want in cases.items():
+            self.assertEqual(_clone_name(src), want, src)
+
     def test_try_clones_seeds_and_cleans_up(self):
         self.write("src/db/pool.py", "def get_pool():\n    # IMPORTANT: never raise above 10 without upgrading the plan\n    return 10\n")
         self.commit("code")

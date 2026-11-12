@@ -647,6 +647,13 @@ def cmd_seed(args) -> int:
     return _seed(store.require_root(Path.cwd()), args.limit, args.apply)
 
 
+def _clone_name(src: str) -> str:
+    """A safe folder name for a clone of `src`: a URL, git@host:owner/repo, or a local path (any OS)."""
+    last = re.split(r"[/\\:]", src.rstrip("/\\"))[-1]
+    last = re.sub(r"\.git$", "", last)
+    return re.sub(r"[^A-Za-z0-9._-]", "-", last).strip(".-") or "repo"
+
+
 def cmd_try(args) -> int:
     import shutil
     import subprocess
@@ -654,7 +661,7 @@ def cmd_try(args) -> int:
     src = args.source
     if os.path.isdir(src):
         src = str(Path(src).resolve())
-    name = re.sub(r"\.git$", "", src.rstrip("/").rsplit("/", 1)[-1]) or "repo"
+    name = _clone_name(src)
     tmp = Path(tempfile.mkdtemp(prefix="anchormem-try-"))
     dest = tmp / name
     try:
