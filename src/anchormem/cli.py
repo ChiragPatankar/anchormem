@@ -606,7 +606,7 @@ def cmd_promote(args) -> int:
     return 0
 
 
-def _seed(root: Path, limit: int, apply: bool, quiet: bool = False, reasons: bool = True) -> int:
+def _seed(root: Path, limit: int, apply: bool, quiet: bool = False, reasons: bool = True, trial: bool = False) -> int:
     have = {m.title.strip().lower() for m in store.load_all(root) + store.load_retired(root)}
     found = [f for f in seed.scan(root, reasons=reasons) if f.title.strip().lower() not in have]
     if not found:
@@ -636,7 +636,8 @@ def _seed(root: Path, limit: int, apply: bool, quiet: bool = False, reasons: boo
             print(paint("✓", GREEN) + f" {mid}  " + where)
     more = len(found) - len(shown)
     if apply:
-        print(f"saved {saved} memories from comments (written by an agent: approve them with anchormem confirm)"
+        print(f"saved {saved} memories from comments" + (" (a demo: they live in the temporary copy)" if trial else
+              " (written by an agent: approve them with anchormem confirm)")
               + (f"; {more} more found, raise --limit to include them" if more else ""))
     else:
         print(paint(f"\n{len(found)} found" + (f", showing {limit}" if more else "")
@@ -674,8 +675,8 @@ def cmd_try(args) -> int:
             return 2
         store.init_root(dest)
         store.ensure_support_files(dest)
-        print("turning its NOTE / WHY / HACK / IMPORTANT / WARNING comments into memories…")
-        _seed(dest, args.limit, apply=True, quiet=True)
+        print("turning the comments that explain its code into memories…")
+        _seed(dest, args.limit, apply=True, quiet=True, trial=True)
         print(paint("nothing is written to your own files; the clone is deleted when you stop"
                     if not args.keep else f"the clone stays at {dest}", DIM))
         return dashboard.serve(dest, args.port, open_browser=_should_open(args))
