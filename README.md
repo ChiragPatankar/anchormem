@@ -79,6 +79,7 @@ anchormem dashboard --serve    # a live page that updates by itself as you work 
 
 The page starts with **Do this next**: each memory that needs a look, handoffs waiting for you, and memories waiting for your approval. Every step comes with its command and a copy button. Below that:
 - the status of every memory, with a plain explanation of each status,
+- a **map** of memories and the code they're about: dots for memories, small circles for functions and classes, squares for files, colored by status. Hover a dot to see what it is, click a memory to jump to it, or click a file to list its memories. Stale memories pulse red, and in `--serve` mode they turn green as soon as you verify them,
 - a table of all memories that you can search and filter ("Need a look", "Not approved"),
 - which files have memories, activity over the last 14 days, handoffs, the notes inbox, lint findings, retired memories and the log.
 

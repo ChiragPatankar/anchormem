@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import json
 import re
 from collections import Counter, OrderedDict
 from html import escape
@@ -144,7 +145,7 @@ def _page(root: Path, s: Snapshot, live: bool) -> str:
         body = f'<p class="body">{_e(m.body)}</p>' if m.body else ""
         tags = " ".join(t for t, on in (("attention", not r.ok), ("unconfirmed", m.unconfirmed_agent)) if on)
         rows.append(
-            f'<tr class="{"bad" if not r.ok else ""}" data-tags="{tags}">'
+            f'<tr id="m-{_e(m.id)}" class="{"bad" if not r.ok else ""}" data-tags="{tags}">'
             f'<td><span class="pill" style="--c:{COLOR[r.status]}" title="{_e(EXPLAIN[r.status])}">{_e(r.status)}</span></td>'
             f'<td><b>{_e(m.title)}</b><div class="dim">{_e(m.id)}</div>{body}{extra}</td>'
             f'<td><ul class="anc">{anchors}</ul></td><td>{who}</td><td>{conf}</td>'
@@ -162,6 +163,23 @@ def _page(root: Path, s: Snapshot, live: bool) -> str:
     else:
         table = ('<div class="pad">' + _empty("No memories yet. Save one with:",
                  'anchormem add "<what is true>" --anchor <file>#<function> --body "<why>"') + '</div>')
+
+    # ---- map: memories -> anchored code -> files
+    graph = graph_data(results)
+    if graph["nodes"]:
+        gjson = json.dumps(graph, separators=(",", ":")).replace("<", "\\u003c").replace("&", "\\u0026")
+        mapsec = (f'<div class="map"><svg id="graph" role="img" aria-label="Map of {len(mems)} memories and the code they are about">'
+                  f'</svg><div id="gtip" class="gtip" hidden></div>'
+                  '<div class="gkey"><span><i class="k-m"></i>memory</span><span><i class="k-s"></i>function / class</span>'
+                  '<span><i class="k-f"></i>file</span><span><i style="background:var(--ok)"></i>ok</span>'
+                  '<span><i style="background:var(--stale)"></i>changed / missing</span>'
+                  '<span><i style="background:var(--amber)"></i>moved / flagged</span></div>'
+                  '<p class="dim ghelp">Hover a dot to see what it is. Click a memory to jump to it, or a file to list its memories.</p>'
+                  '<noscript><p class="dim">The map needs JavaScript; everything it shows is also in the table below.</p></noscript>'
+                  f'</div><script type="application/json" id="graph-data">{gjson}</script>')
+    else:
+        mapsec = '<div class="pad">' + _empty("The map appears once there's a memory attached to code.") + '</div>'
+    n_files = len({n["id"] for n in graph["nodes"] if n["kind"] == "file"})
 
     # ---- files map
     files: "OrderedDict[str, List[str]]" = OrderedDict()
@@ -214,17 +232,17 @@ def _page(root: Path, s: Snapshot, live: bool) -> str:
                            f'{_e(m.extra.get("retired_reason", ""))}</span></div>' for m in retired)
 
     panels = "".join([
-        _panel(4, "Files with memories", f"{len(files)} files", fmap or _empty("No memories point at code yet.")),
-        _panel(5, "Activity, last 14 days", f"{len(log)} events",
+        _panel(5, "Files with memories", f"{len(files)} files", fmap or _empty("No memories point at code yet.")),
+        _panel(6, "Activity, last 14 days", f"{len(log)} events",
                f'<div class="cols">{cols}</div><p class="dim">{_e(opline) or "nothing logged yet"}</p>'),
-        _panel(6, "Handoffs", f"{len(s.pending)} waiting",
+        _panel(7, "Handoffs", f"{len(s.pending)} waiting",
                hrows or _empty("No handoffs. When a session stops mid-task, it can leave one:",
                                'anchormem handoff new "<where things stand>" -n "<next step>"')),
-        _panel(7, "Notes inbox", f"{len(s.groups)} ready",
+        _panel(8, "Notes inbox", f"{len(s.groups)} ready",
                ibody if s.notes else _empty("No notes. Agents jot small observations with:",
                                             'anchormem note <file>#<function> "<what you noticed>"')),
-        _panel(8, "Lint", f"{len(s.findings)} findings", lbody or '<p class="ok">No problems found in the memories.</p>'),
-        _panel(9, "Retired", f"{len(retired)} retired", retired_rows or _empty("Nothing retired.")),
+        _panel(9, "Lint", f"{len(s.findings)} findings", lbody or '<p class="ok">No problems found in the memories.</p>'),
+        _panel(10, "Retired", f"{len(retired)} retired", retired_rows or _empty("Nothing retired.")),
     ])
 
     if live:
@@ -259,16 +277,55 @@ paste it into a terminal inside this repo.</p></div></details>
 <section class="frame"><div class="ph"><span class="n">02</span><span class="t">Status of every memory</span>
 <span class="tag">{len(mems)} memories · {n_anchors} anchors</span></div><div class="pad">{strip}</div></section>
 
-<section class="frame"><div class="ph"><span class="n">03</span><span class="t">Memories</span>
+<section class="frame"><div class="ph"><span class="n">03</span><span class="t">Map of memories and code</span>
+<span class="tag">{len(mems)} memories · {n_files} files</span></div>{mapsec}</section>
+
+<section class="frame"><div class="ph"><span class="n">04</span><span class="t">Memories</span>
 <span class="tag">the ones that need a look come first</span></div>{table}</section>
 
 <div class="grid">{panels}</div>
 
-<section class="frame"><div class="ph"><span class="n">10</span><span class="t">Log</span>
+<section class="frame"><div class="ph"><span class="n">11</span><span class="t">Log</span>
 <span class="tag">.anchormem/log.md · newest first</span></div><div class="log">{recent or _empty("No log entries yet.")}</div></section>
 <footer class="dim">{refresh}</footer>
-</div><script>{JS}</script></body></html>
+</div><script>{JS}</script><script>{GRAPH_JS}</script></body></html>
 """
+
+
+_RANK = {core.MISSING: 5, core.CHANGED: 4, core.MOVED: 3, core.FLAGGED: 2, core.UNVERIFIED: 1, core.OK: 0}
+
+
+def graph_data(results) -> dict:
+    """Nodes for memories, the functions/classes/lines they point at, and files; links between them."""
+    nodes, links, seen = [], [], {}
+
+    def node(nid: str, kind: str, label: str, status: str, title: str = "") -> None:
+        if nid in seen:
+            n = nodes[seen[nid]]
+            if _RANK[status] > _RANK[n["status"]]:
+                n["status"] = status
+            n["count"] += 1
+            return
+        seen[nid] = len(nodes)
+        nodes.append({"id": nid, "kind": kind, "label": label, "status": status, "title": title, "count": 1})
+
+    for r in results:
+        m = r.memory
+        mid = "m:" + m.id
+        node(mid, "memory", m.id, r.status, m.title)
+        for a in r.anchors:
+            fid = "f:" + a.anchor.path
+            node(fid, "file", a.anchor.path, a.status)
+            if a.anchor.symbol or a.anchor.start is not None:
+                aid = "a:" + str(a.anchor)
+                label = a.anchor.symbol or f"lines {a.anchor.start}-{a.anchor.end}"
+                node(aid, "symbol", label, a.status, str(a.anchor))
+                links.append([mid, aid, a.status])
+                if [aid, fid, "part"] not in links:
+                    links.append([aid, fid, "part"])
+            else:
+                links.append([mid, fid, a.status])
+    return {"nodes": nodes, "links": links}
 
 
 # ---------------------------------------------------------------- live server
@@ -328,6 +385,68 @@ def serve(root: Path, port: int = 8765, open_browser: bool = True) -> int:
     return 0
 
 
+GRAPH_JS = r"""
+(function(){
+var el=document.getElementById('graph-data'),svg=document.getElementById('graph');if(!el||!svg)return;
+var G=JSON.parse(el.textContent),N=G.nodes,L=G.links,NS='http://www.w3.org/2000/svg',idx={},i,j;
+N.forEach(function(n,k){idx[n.id]=k;});
+var E=L.map(function(l){return{a:idx[l[0]],b:idx[l[1]],s:l[2]};});
+var nb=N.map(function(){return[];});E.forEach(function(e){nb[e.a].push(e.b);nb[e.b].push(e.a);});
+// deterministic start so the map looks the same after every refresh
+function h(str){var x=2166136261;for(var k=0;k<str.length;k++){x^=str.charCodeAt(k);x=Math.imul(x,16777619);}return(x>>>0)/4294967296;}
+var files=N.filter(function(n){return n.kind==='file';}),R=60+files.length*22;
+files.forEach(function(n,k){var t=2*Math.PI*k/files.length;n.x=Math.cos(t)*R;n.y=Math.sin(t)*R;});
+N.forEach(function(n){if(n.kind!=='file'){var t=h(n.id)*6.283,r=R*(n.kind==='memory'?.35:.8);n.x=Math.cos(t)*r;n.y=Math.sin(t)*r;}n.vx=0;n.vy=0;});
+var REST={memory:70,part:34},iters=N.length>220?140:320;
+for(var it=0;it<iters;it++){var cool=1-it/iters;
+ for(i=0;i<N.length;i++)for(j=i+1;j<N.length;j++){var dx=N[j].x-N[i].x,dy=N[j].y-N[i].y,d2=dx*dx+dy*dy+.01,f=1800/d2,d=Math.sqrt(d2);
+  dx/=d;dy/=d;N[i].vx-=dx*f;N[i].vy-=dy*f;N[j].vx+=dx*f;N[j].vy+=dy*f;}
+ E.forEach(function(e){var A=N[e.a],B=N[e.b],dx=B.x-A.x,dy=B.y-A.y,d=Math.sqrt(dx*dx+dy*dy)||1,rest=e.s==='part'?REST.part:REST.memory,f=(d-rest)*.06;
+  dx/=d;dy/=d;A.vx+=dx*f;A.vy+=dy*f;B.vx-=dx*f;B.vy-=dy*f;});
+ N.forEach(function(n){n.vx-=n.x*.012;n.vy-=n.y*.012;var sp=Math.sqrt(n.vx*n.vx+n.vy*n.vy),mx=12*cool+1;if(sp>mx){n.vx*=mx/sp;n.vy*=mx/sp;}
+  n.x+=n.vx;n.y+=n.vy;n.vx*=.55;n.vy*=.55;});}
+N.forEach(function(n){n.bx=n.x;n.by=n.y;});
+svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+var COL={ok:'var(--ok)',changed:'var(--stale)',missing:'var(--stale)',moved:'var(--amber)',flagged:'var(--amber)',unverified:'var(--dim)',part:'var(--line2)'};
+function mk(tag,attrs,parent){var e=document.createElementNS(NS,tag);for(var k in attrs)e.setAttribute(k,attrs[k]);(parent||svg).appendChild(e);return e;}
+var gl=mk('g',{'class':'links'}),gn=mk('g',{'class':'nodes'});
+var lines=E.map(function(e){return mk('line',{x1:N[e.a].x,y1:N[e.a].y,x2:N[e.b].x,y2:N[e.b].y,stroke:COL[e.s]||COL.part,'class':e.s==='part'?'lp':'lm'},gl);});
+var tip=document.getElementById('gtip'),wrap=svg.parentNode;
+var els=N.map(function(n,k){var g=mk('g',{'class':'n n-'+n.kind+(n.status!=='ok'&&n.status!=='unverified'?' bad':''),transform:'translate('+n.x+','+n.y+')',tabindex:'0'},gn);
+ var c=COL[n.status]||COL.ok;
+ if(n.kind==='memory'){if(n.status!=='ok')mk('circle',{r:13,'class':'ring',stroke:c},g);mk('circle',{r:7,fill:c},g);}
+ else if(n.kind==='file'){var sz=9+Math.min(n.count,6)*1.5;mk('rect',{x:-sz/2,y:-sz/2,width:sz,height:sz,fill:'var(--panel)',stroke:c,'stroke-width':2.2},g);
+  var base=n.label.split('/').pop();mk('text',{y:sz/2+14,'text-anchor':'middle','class':'lf'},g).textContent=base;}
+ else{mk('circle',{r:4,fill:'var(--panel)',stroke:c,'stroke-width':2},g);mk('text',{x:7,y:3.5,'class':'ls'},g).textContent=n.label;}
+ mk('title',{},g).textContent=(n.kind==='memory'?n.title:n.kind==='file'?n.label:n.title)+' ('+n.status+')';
+ return g;});
+// stretch the layout sideways to fill the panel (labels keep their size)
+function place(){var x0=1e9,y0=1e9,x1=-1e9,y1=-1e9;N.forEach(function(n){x0=Math.min(x0,n.bx);y0=Math.min(y0,n.by);x1=Math.max(x1,n.bx);y1=Math.max(y1,n.by);});
+ var w=svg.clientWidth||800,hh=svg.clientHeight||440,padx=80,pady=40,bw=Math.max(x1-x0,1),bh=Math.max(y1-y0,1);
+ var sx=Math.max(1,Math.min(3,((w/hh)*(bh+2*pady)-2*padx)/bw));
+ N.forEach(function(n){n.x=(n.bx-x0)*sx;n.y=n.by-y0;});
+ els.forEach(function(g,k){g.setAttribute('transform','translate('+N[k].x+','+N[k].y+')');});
+ lines.forEach(function(l,m){var e=E[m];l.setAttribute('x1',N[e.a].x);l.setAttribute('y1',N[e.a].y);l.setAttribute('x2',N[e.b].x);l.setAttribute('y2',N[e.b].y);});
+ svg.setAttribute('viewBox',(-padx)+' '+(-pady)+' '+(bw*sx+2*padx)+' '+(bh+2*pady+14));}
+place();var rt;window.addEventListener('resize',function(){clearTimeout(rt);rt=setTimeout(place,120);});
+function focus(k){els.forEach(function(g,m){g.classList.toggle('fade',k!==null&&m!==k&&nb[k].indexOf(m)<0);});
+ lines.forEach(function(l,m){var e=E[m];l.classList.toggle('fade',k!==null&&e.a!==k&&e.b!==k);});}
+function show(k,ev){var n=N[k];if(!tip)return;var kind={memory:'memory',file:'file',symbol:'code'}[n.kind];
+ tip.innerHTML='';var b=document.createElement('b');b.textContent=n.kind==='memory'?n.title:n.label;tip.appendChild(b);
+ var d=document.createElement('div');d.className='dim';d.textContent=kind+' · '+n.status+(n.kind==='file'?' · '+n.count+' link'+(n.count>1?'s':''):n.kind==='memory'?' · '+n.label:'');tip.appendChild(d);
+ tip.hidden=false;var r=wrap.getBoundingClientRect(),gr=els[k].getBoundingClientRect(),x=gr.left-r.left+gr.width/2,y=gr.top-r.top;
+ tip.style.left=Math.max(4,Math.min(x-tip.offsetWidth/2,r.width-tip.offsetWidth-4))+'px';tip.style.top=Math.max(4,y-tip.offsetHeight-8)+'px';}
+function hide(){focus(null);if(tip)tip.hidden=true;}
+function act(k){var n=N[k];
+ if(n.kind==='memory'){var row=document.getElementById('m-'+n.label);if(row){if(row.hidden){var all=document.querySelector('[data-mode="all"]');if(all)all.click();var q=document.getElementById('q');if(q&&q.value){q.value='';q.dispatchEvent(new Event('input'));}}
+  row.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'center'});row.classList.remove('flash');void row.offsetWidth;row.classList.add('flash');}}
+ else{var q2=document.getElementById('q');if(q2){q2.value=n.kind==='file'?n.label:n.title;q2.dispatchEvent(new Event('input'));q2.scrollIntoView({behavior:'smooth',block:'center'});}}}
+els.forEach(function(g,k){g.addEventListener('mouseenter',function(e){focus(k);show(k,e);});g.addEventListener('mouseleave',hide);
+ g.addEventListener('focus',function(e){focus(k);show(k,e);});g.addEventListener('blur',hide);
+ g.addEventListener('click',function(){act(k);});g.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();act(k);}});});
+})();
+"""
+
 JS = r"""
 (function(){
 var q=document.getElementById('q'),rows=[].slice.call(document.querySelectorAll('tr[data-tags]')),mode='all';
@@ -356,10 +475,10 @@ if(document.body.getAttribute('data-live')){var v=document.body.getAttribute('da
 
 CSS = """
 :root{--bg:#060a12;--panel:#0a0f1a;--panel2:#0e1524;--line:#1a2435;--fg:#ece4d3;--dim:#858ea1;
---accent:#ff7a1a;--amber:#ffb54d;--stale:#ff5a74;--ok:#58e0a2;--onacc:#060a12;
+--accent:#ff7a1a;--amber:#ffb54d;--stale:#ff5a74;--ok:#58e0a2;--onacc:#060a12;--line2:#3a475e;
 --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;color-scheme:dark}
 @media (prefers-color-scheme:light){:root{--bg:#f6f3ec;--panel:#fffdf8;--panel2:#f3efe6;--line:#e0d9ca;--fg:#1d1a14;
---dim:#6b6558;--accent:#c25500;--amber:#975700;--stale:#c8203f;--ok:#12784f;--onacc:#fff;color-scheme:light}}
+--dim:#6b6558;--line2:#b9b09c;--accent:#c25500;--amber:#975700;--stale:#c8203f;--ok:#12784f;--onacc:#fff;color-scheme:light}}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:12.5px;line-height:1.55;overflow-x:hidden}
 .wrap{max-width:1200px;margin:0 auto;padding:18px 16px 32px;display:flex;flex-direction:column;gap:12px}
@@ -447,6 +566,23 @@ footer .cmd{margin:0}
 #livedot.off{background:var(--stale);animation:none}
 @keyframes pulse{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){#livedot{animation:none}}
+.map{position:relative;padding:0 10px 10px}
+#graph{display:block;width:100%;height:440px;background:var(--panel2);border:1px solid var(--line)}
+#graph line{stroke-width:1.6;opacity:.75;transition:opacity .15s} #graph line.lp{stroke-dasharray:3 3;opacity:.6}
+#graph .n{cursor:pointer;transition:opacity .15s} #graph .n:focus{outline:none} #graph .n:focus circle,#graph .n:focus rect{stroke:var(--accent);stroke-width:3}
+#graph .n.fade,#graph line.fade{opacity:.1}
+#graph text{font-family:var(--mono);fill:var(--fg);pointer-events:none} .lf{font-size:11px;font-weight:700} .ls{font-size:9.5px;fill:var(--dim)!important}
+#graph .ring{fill:none;stroke-width:2;transform-box:fill-box;transform-origin:center;animation:ring 1.8s ease-out infinite}
+@keyframes ring{0%{opacity:.9;transform:scale(.6)}100%{opacity:0;transform:scale(1.6)}}
+@media (prefers-reduced-motion:reduce){#graph .ring{animation:none;opacity:.6}}
+.gtip{position:absolute;z-index:2;max-width:280px;pointer-events:none;background:var(--panel);border:1px solid var(--accent);padding:6px 8px;font-size:11px;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+.gkey{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:10.5px;color:var(--dim)}
+.gkey span{display:flex;align-items:center;gap:6px} .gkey i{width:9px;height:9px;display:block;border-radius:50%}
+.gkey .k-m{background:var(--fg)} .gkey .k-s{border:2px solid var(--fg);width:8px;height:8px} .gkey .k-f{border:2px solid var(--fg);border-radius:0}
+.ghelp{margin:6px 0 0;font-size:10.5px}
+tr.flash td{animation:flash 1.6s ease-out}
+@keyframes flash{0%{background:color-mix(in srgb,var(--accent) 35%,transparent)}100%{background:transparent}}
+@media (max-width:600px){#graph{height:340px}}
 @media (max-width:900px){.grid{grid-template-columns:repeat(2,minmax(0,1fr))}header{grid-template-columns:auto minmax(0,1fr)}.stats{grid-column:1/-1}}
 @media (max-width:600px){.grid{grid-template-columns:minmax(0,1fr)}.stats{gap:14px}.step{grid-template-columns:minmax(0,1fr);gap:4px}
 .lg{grid-template-columns:auto auto;justify-content:start}.lg .dim{grid-column:1/-1}.verdict{font-size:16px}}

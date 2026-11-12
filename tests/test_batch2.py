@@ -270,5 +270,38 @@ class TestFriendly(RepoCase):
             httpd.server_close()
 
 
+class TestGraph(RepoCase):
+    def test_graph_links_memories_to_code_and_files(self):
+        self.run_cli("init")
+        self.run_cli("add", "Pool", "-a", "src/db/pool.py#POOL_SIZE", "-b", "x", "--id", "pool")
+        self.run_cli("add", "Whole file", "-a", "src/db/pool.py", "-b", "x", "--id", "file")
+        self.run_cli("add", "Rounding", "-a", "src/billing/invoice.ts#lineTotal", "-a", "src/db/pool.py#POOL_SIZE",
+                     "-b", "x", "--id", "round")
+        self.write("src/db/pool.py", "POOL_SIZE = 99\n")
+        snap = advice.snapshot(self.root)
+        g = dashboard.graph_data(snap.results)
+        nodes = {n["id"]: n for n in g["nodes"]}
+        self.assertEqual(sorted(k for k in nodes if k.startswith("f:")), ["f:src/billing/invoice.ts", "f:src/db/pool.py"])
+        self.assertEqual(nodes["a:src/db/pool.py#POOL_SIZE"]["count"], 2)  # shared by two memories
+        self.assertEqual(nodes["f:src/db/pool.py"]["status"], "changed")   # worst status wins
+        self.assertEqual(nodes["f:src/billing/invoice.ts"]["status"], "ok")
+        links = {tuple(l[:2]) for l in g["links"]}
+        self.assertIn(("m:file", "f:src/db/pool.py"), links)                # whole-file anchor links straight to the file
+        self.assertIn(("a:src/db/pool.py#POOL_SIZE", "f:src/db/pool.py"), links)
+        self.assertEqual(sum(1 for l in g["links"] if l[:2] == ["a:src/db/pool.py#POOL_SIZE", "f:src/db/pool.py"]), 1)
+        page = dashboard.build(self.root)
+        data = page.split('id="graph-data">', 1)[1].split("</script>", 1)[0]
+        self.assertEqual(len(json.loads(data)["nodes"]), len(g["nodes"]))
+        self.assertIn('id="m-pool"', page)
+
+    def test_graph_data_cannot_break_out_of_its_script_tag(self):
+        self.run_cli("init")
+        self.run_cli("add", "</script><img src=x onerror=alert(1)>", "-a", "README.md", "-b", "x", "--id", "evil")
+        page = dashboard.build(self.root)
+        data = page.split('id="graph-data">', 1)[1].split("</script>", 1)[0]
+        self.assertEqual(json.loads(data)["nodes"][0]["title"], "</script><img src=x onerror=alert(1)>")
+        self.assertNotIn("<img src=x", page)
+
+
 if __name__ == "__main__":
     unittest.main()
