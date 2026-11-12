@@ -303,5 +303,33 @@ class TestGraph(RepoCase):
         self.assertNotIn("<img src=x", page)
 
 
+class TestServeDisconnects(RepoCase):
+    def test_client_hanging_up_mid_response_prints_nothing(self):
+        import contextlib
+        import socket
+        import struct
+        self.run_cli("init")
+        for i in range(30):  # a page big enough not to fit in one send
+            self.run_cli("add", f"Memory {i} " + "x" * 200, "-a", "README.md", "-b", "y" * 400, "--id", f"m{i}")
+        httpd = dashboard.make_server(self.root, 8820)
+        err = io.StringIO()
+        t = threading.Thread(target=httpd.serve_forever, daemon=True)
+        with contextlib.redirect_stderr(err):
+            t.start()
+            try:
+                for _ in range(5):
+                    c = socket.create_connection(("127.0.0.1", httpd.server_address[1]))
+                    c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))  # hang up hard
+                    c.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+                    c.close()
+                time.sleep(1.5)
+                ok = urllib.request.urlopen(f"http://127.0.0.1:{httpd.server_address[1]}/version", timeout=10).read()
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+        self.assertEqual(len(ok.strip()), 12)  # still serving
+        self.assertNotIn("Traceback", err.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

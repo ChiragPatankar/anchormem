@@ -9,6 +9,7 @@ import datetime as dt
 import hashlib
 import json
 import re
+import sys
 from collections import Counter, OrderedDict
 from html import escape
 from pathlib import Path
@@ -330,6 +331,9 @@ def graph_data(results) -> dict:
 
 # ---------------------------------------------------------------- live server
 
+_GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+
 def make_server(root: Path, port: int = 8765):
     """An HTTP server on 127.0.0.1 that rebuilds the page on every request. Tries the next ports if busy."""
     import http.server
@@ -348,17 +352,24 @@ def make_server(root: Path, port: int = 8765):
                     return
             except Exception as e:  # show the problem instead of a dead page
                 body, ctype = f"anchormem could not build the dashboard: {e}".encode(), "text/plain"
-            self.send_response(200)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+            except _GONE:
+                pass  # the browser reloaded or closed the tab mid-response
 
         def log_message(self, *args):
             pass
 
     class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
         daemon_threads = True
+
+        def handle_error(self, request, client_address):
+            if not isinstance(sys.exc_info()[1], _GONE):  # a closed tab is normal, not an error
+                super().handle_error(request, client_address)
 
     for p in range(port, port + 20):
         try:
