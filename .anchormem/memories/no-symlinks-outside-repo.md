@@ -2,6 +2,7 @@
 id: no-symlinks-outside-repo
 title: Never read files through symlinks that point outside the repo
 origin: agent
+confirmed: 2026-11-12
 created: 2026-11-12
 verified: 2026-11-12
 commit: 486395a

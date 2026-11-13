@@ -2,6 +2,7 @@
 id: handoff-claim-once
 title: SessionStart takes a handoff once, and shows it again after a resume or compact
 origin: agent
+confirmed: 2026-11-12
 created: 2026-11-10
 verified: 2026-11-10
 commit: fdcc6c5

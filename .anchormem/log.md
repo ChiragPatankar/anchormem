@@ -18,3 +18,12 @@ Append-only record of memory changes. Newest at the bottom.
 ## [2026-11-10 22:34] verify | stdlib-only | pyproject.toml fp 485488e03467 -> 69f3e580fa20 @ 62a092e
 ## [2026-11-10 22:35] add | add-stdin-only-when-piped | by agent | src/anchormem/cli.py#_stdin_has_data
 ## [2026-11-12 01:48] add | no-symlinks-outside-repo | by agent | src/anchormem/codemap.py#inside
+## [2026-11-12 21:07] confirm | add-stdin-only-when-piped
+## [2026-11-12 21:07] confirm | frontmatter-yaml
+## [2026-11-12 21:07] confirm | handoff-claim-once
+## [2026-11-12 21:07] confirm | hooks-never-fail
+## [2026-11-12 21:07] confirm | move-detection-order
+## [2026-11-12 21:07] confirm | no-symlinks-outside-repo
+## [2026-11-12 21:07] confirm | promote-dry-run
+## [2026-11-12 21:07] confirm | stdlib-only
+## [2026-11-12 21:08] confirm | exit-codes

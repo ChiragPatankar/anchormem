@@ -2,6 +2,7 @@
 id: exit-codes
 title: check exits 0 when fresh, 1 when stale, 2 on usage errors
 origin: agent
+confirmed: 2026-11-12
 created: 2026-11-10
 verified: 2026-11-10
 commit: 62a092e

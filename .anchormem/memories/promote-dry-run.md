@@ -2,6 +2,7 @@
 id: promote-dry-run
 title: promote never writes memories without --apply
 origin: agent
+confirmed: 2026-11-12
 created: 2026-11-10
 verified: 2026-11-10
 commit: fdcc6c5

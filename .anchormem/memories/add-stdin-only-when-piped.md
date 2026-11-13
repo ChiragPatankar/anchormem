@@ -2,6 +2,7 @@
 id: add-stdin-only-when-piped
 title: add only reads stdin when data is actually piped in
 origin: agent
+confirmed: 2026-11-12
 created: 2026-11-10
 verified: 2026-11-10
 commit: 62a092e

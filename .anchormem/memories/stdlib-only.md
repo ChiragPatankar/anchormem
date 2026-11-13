@@ -2,6 +2,7 @@
 id: stdlib-only
 title: Standard library only, Python 3.9 and newer
 origin: agent
+confirmed: 2026-11-12
 created: 2026-11-10
 verified: 2026-11-10
 commit: 62a092e

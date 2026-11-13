@@ -2,6 +2,7 @@
 id: frontmatter-yaml
 title: Memory frontmatter must stay valid YAML
 origin: agent
+confirmed: 2026-11-12
 created: 2026-11-10
 verified: 2026-11-10
 commit: 81089aa

@@ -2,6 +2,7 @@
 id: move-detection-order
 title: Move detection tries git renames, then whole-file fingerprints, then a symbol search
 origin: agent
+confirmed: 2026-11-12
 created: 2026-11-10
 verified: 2026-11-10
 commit: 81089aa
