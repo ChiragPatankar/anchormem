@@ -23,7 +23,13 @@ Coding agents (Claude Code, Codex, Cursor and the rest) forget everything betwee
 **anchormem ties every memory to the exact code it describes.** When that code changes, moves or disappears, the memory is flagged before the agent relies on it. No LLM does the checking, so it takes milliseconds and costs no tokens.
 
 <p align="center">
-  <img src="docs/media/demo.gif" alt="Changing POOL_SIZE from 10 to 25 turns the memory about it red: CHANGED" width="100%">
+  <a href="https://github.com/ChiragPatankar/anchormem/releases/download/v0.4.0/anchormem-promo.mp4"><img src="docs/media/demo.gif" alt="Changing POOL_SIZE from 10 to 25 turns the memory about it red: CHANGED" width="100%"></a>
+</p>
+
+<p align="center">
+  ▶ <a href="https://github.com/ChiragPatankar/anchormem/releases/download/v0.4.0/anchormem-promo.mp4"><b>Watch the 30-second video</b></a> (with narration) ·
+  <a href="https://github.com/ChiragPatankar/anchormem/releases/download/v0.4.0/anchormem-promo-square.mp4">square version</a> ·
+  <a href="https://github.com/ChiragPatankar/anchormem/releases/tag/v0.4.0">release notes</a>
 </p>
 
 ```console
