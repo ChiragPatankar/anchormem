@@ -71,22 +71,10 @@ Memories are plain Markdown in `.anchormem/memories/`, committed with your code.
 
 Every memory has an **anchor**: a file, a function or constant (`#get_pool`), a method (`#App.build`) or a line range (`:10-24`). When a memory is saved, the anchored code is fingerprinted with all whitespace removed. Every check reads the code again and compares:
 
-```mermaid
-flowchart LR
-    A[Read anchored code] --> B{Code found?}
-    B -- yes --> C{Fingerprint matches?}
-    C -- yes --> OK([OK])
-    C -- no --> CH([CHANGED])
-    B -- no --> D[Look for it elsewhere:<br/>git rename, same file, same symbol]
-    D -- found --> MV([MOVED])
-    D -- not found --> MS([MISSING])
-    classDef ok fill:#e8f6ec,stroke:#2f9e44,color:#1a1a1a
-    classDef bad fill:#fbeaea,stroke:#d43c3c,color:#1a1a1a
-    classDef warn fill:#fff4df,stroke:#f0a020,color:#1a1a1a
-    class OK ok
-    class CH,MS bad
-    class MV warn
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/check-flow-dark.png">
+  <img src="docs/media/check-flow-light.png" alt="How anchormem check decides a status: code found and fingerprint matches gives OK; a different fingerprint gives CHANGED; code not found is searched for elsewhere, giving MOVED or MISSING" width="100%">
+</picture>
 
 Python symbols are found with Python's own parser. JavaScript, TypeScript, Go, Rust, Java, C# and similar languages use a text-based finder that matches braces. A memory can have several anchors; it's stale if any of them is.
 
