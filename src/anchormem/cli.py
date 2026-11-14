@@ -794,11 +794,19 @@ def _should_open(args) -> bool:
 
 def cmd_dashboard(args) -> int:
     root = store.require_root(Path.cwd())
+    layout = "tall" if args.tall else "wide"
     if args.serve:
-        return dashboard.serve(root, args.port, open_browser=_should_open(args))
-    out = Path(args.out).resolve() if args.out else dashboard.default_path(root)
+        return dashboard.serve(root, args.port, open_browser=_should_open(args), hud=args.hud, layout=layout)
+    if args.out:
+        out = Path(args.out).resolve()
+    else:
+        out = dashboard.default_path(root).with_name("hud.html") if args.hud else dashboard.default_path(root)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(dashboard.build(root), encoding="utf-8")
+    if args.hud:
+        from . import hud
+        out.write_text(hud.build(root, layout=layout), encoding="utf-8")
+    else:
+        out.write_text(dashboard.build(root), encoding="utf-8")
     print(f"wrote {out}")
     if _should_open(args):
         import webbrowser
@@ -963,6 +971,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("dashboard", help="write an HTML page showing every memory, its status, the log and handoffs")
     s.add_argument("--out", "-o", metavar="FILE", help="where to write it (default: .anchormem/.state/dashboard.html)")
     s.add_argument("--serve", action="store_true", help="run a local page that updates by itself (Ctrl+C to stop)")
+    s.add_argument("--hud", action="store_true", help="the control-room view: one animated screen of the repo's real memory state")
+    s.add_argument("--tall", action="store_true", help="with --hud: 4:5 portrait layout (default is wide 16:9)")
     s.add_argument("--port", type=int, default=8765, help="port for --serve (default 8765, next free one if busy)")
     s.add_argument("--open", action="store_true", help="always open the browser")
     s.add_argument("--no-open", action="store_true", help="never open the browser")

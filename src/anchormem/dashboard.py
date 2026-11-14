@@ -360,7 +360,8 @@ def graph_data(results, skeleton=()) -> dict:
 _GONE = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
 
 
-def make_server(root: Path, port: int = 8765):
+def make_server(root: Path, port: int = 8765, hud: bool = False, layout: str = "wide"):
+    from . import hud as hud_mod
     """An HTTP server on 127.0.0.1 that rebuilds the page on every request. Tries the next ports if busy."""
     import http.server
     import socketserver
@@ -370,9 +371,10 @@ def make_server(root: Path, port: int = 8765):
             path = self.path.split("?", 1)[0]
             try:
                 if path == "/version":
-                    body, ctype = version(root).encode(), "text/plain"
+                    body, ctype = (hud_mod.version(root) if hud else version(root)).encode(), "text/plain"
                 elif path in ("/", "/index.html"):
-                    body, ctype = build(root, live=True).encode("utf-8"), "text/html; charset=utf-8"
+                    page = hud_mod.build(root, live=True, layout=layout) if hud else build(root, live=True)
+                    body, ctype = page.encode("utf-8"), "text/html; charset=utf-8"
                 else:
                     self.send_error(404)
                     return
@@ -405,9 +407,9 @@ def make_server(root: Path, port: int = 8765):
     raise OSError(f"no free port between {port} and {port + 19}")
 
 
-def serve(root: Path, port: int = 8765, open_browser: bool = True) -> int:
+def serve(root: Path, port: int = 8765, open_browser: bool = True, hud: bool = False, layout: str = "wide") -> int:
     import webbrowser
-    httpd = make_server(root, port)
+    httpd = make_server(root, port, hud=hud, layout=layout)
     url = f"http://127.0.0.1:{httpd.server_address[1]}/"
     print(f"live dashboard for {root.name}: {url}")
     print("  it updates by itself when memories or code change. Press Ctrl+C to stop.")

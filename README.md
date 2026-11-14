@@ -161,6 +161,21 @@ anchormem dashboard --serve    # live on 127.0.0.1: updates by itself as code ch
 
 It follows your light or dark setting and works on a phone.
 
+<details>
+<summary><b>Control-room view: <code>anchormem dashboard --hud</code></b></summary>
+
+```bash
+anchormem dashboard --hud              # one animated screen of the repo's memory state (16:9)
+anchormem dashboard --hud --tall       # 4:5 portrait, for phones
+anchormem dashboard --serve --hud      # live: updates by itself as code changes
+```
+
+A gold "mission control" screen built only from the repo's real data: a constellation of memories anchored to code (red where the code really changed), each memory in turn, a per-memory status matrix (anchor found, fingerprint matches, approved, has feedback, lint clean), stored vs current fingerprints, `check` output with its real timing, the diff of the anchored symbol since it was verified, the log, what the Claude Code hooks actually delivered, files by memory count, seeded memories and notes, the latest handoff, and confidence from feedback. The animation decorates the data; it never changes it.
+
+The hook feed comes from `.anchormem/.state/hook-events.jsonl`, which the hooks append to (per machine, gitignored, capped at a few hundred lines).
+
+</details>
+
 ## More features
 
 <details>
@@ -271,7 +286,7 @@ exec anchormem check -q
 | `anchormem note <anchor> "<text>"` / `promote [--apply]` | Jots an observation, and turns repeated ones into memories. |
 | `anchormem seed [--apply] [--limit N] [--tagged-only]` | Turns comments that explain the code into memories. |
 | `anchormem try <git-url-or-folder> [--keep]` | Clones a repo to a temp folder, seeds it and opens the live dashboard. |
-| `anchormem dashboard [--serve] [-o FILE] [--open\|--no-open]` | Opens the dashboard. `--serve` keeps it live. |
+| `anchormem dashboard [--serve] [--hud [--tall]] [-o FILE] [--open\|--no-open]` | Opens the dashboard, or the control-room view with `--hud`. `--serve` keeps it live. |
 | `anchormem lint [--strict] [--json]` | Checks the memories themselves for problems. |
 | `anchormem doctor` | Checks the setup: memory files, agent rules, hooks, PATH, gitignore, git. |
 | `anchormem hooks install\|remove [--local] [--dry-run]` | Installs or removes the Claude Code hooks. |

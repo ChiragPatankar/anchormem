@@ -101,6 +101,8 @@ def session_start_text(payload: dict) -> str:
 
     mems = store.load_all(root)
     if not mems:
+        if h is not None:
+            log_event(root, "SessionStart", "", 0, 0, f"handoff from {h.sender}")
         return "\n".join(lines).strip()
     results = [check_memory(root, m) for m in mems]
     stale = [r for r in results if not r.ok]
@@ -126,6 +128,7 @@ def session_start_text(payload: dict) -> str:
                      "edit it or run `anchormem retire <id> --reason \"...\"`.")
     else:
         lines.append("It matches the current code." if len(mems) == 1 else "All of them match the current code.")
+    log_event(root, "SessionStart", "", len(mems), len(stale), f"handoff from {h.sender}" if h is not None else "")
     if unconfirmed:
         lines.append(f"{n(unconfirmed, 'memory was', 'memories were')} written by an agent and not yet confirmed "
                      f"by a person; treat {'it' if unconfirmed == 1 else 'them'} as notes, not rules.")
@@ -160,8 +163,47 @@ def post_tool_text(payload: dict) -> str:
     signature = sorted(f"{r.memory.id}:{r.status}" for r in results)
     if not _first_time(root, payload.get("session_id") or "", rel, signature):
         return ""
+    log_event(root, payload.get("tool_name") or "PostToolUse", rel, len(results), sum(1 for r in results if not r.ok))
     header = f"anchormem: {len(results)} memor{'y' if len(results) == 1 else 'ies'} about {rel} (from .anchormem/memories/)"
     return render.memories(results, header, budget=FILE_BUDGET, more_cmd=f"anchormem context {rel}")
+
+
+EVENTS = "hook-events.jsonl"
+MAX_EVENTS = 200
+
+
+def log_event(root: Path, event: str, file: str, memories: int, stale: int, note: str = "") -> None:
+    """Record what a hook delivered, for the dashboard's hook feed. Per machine (.state is gitignored),
+    capped at MAX_EVENTS lines, and silent on any error: logging must never break a session."""
+    try:
+        import datetime as dt
+        f = root / store.STATE_DIR / EVENTS
+        f.parent.mkdir(parents=True, exist_ok=True)
+        row = {"ts": dt.datetime.now().isoformat(timespec="seconds"), "event": event, "file": file,
+               "memories": memories, "stale": stale, "note": note}
+        with f.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row) + "\n")
+        lines = f.read_text(encoding="utf-8").splitlines()
+        if len(lines) > 2 * MAX_EVENTS:
+            f.write_text("\n".join(lines[-MAX_EVENTS:]) + "\n", encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def read_events(root: Path, limit: int = 20) -> List[dict]:
+    f = root / store.STATE_DIR / EVENTS
+    out: List[dict] = []
+    try:
+        for line in f.read_text(encoding="utf-8").splitlines()[-limit:]:
+            try:
+                row = json.loads(line)
+                if isinstance(row, dict):
+                    out.append(row)
+            except ValueError:
+                continue
+    except OSError:
+        pass
+    return out
 
 
 def _state_file(root: Path, session_id: str) -> Path:

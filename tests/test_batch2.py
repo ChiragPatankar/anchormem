@@ -446,5 +446,77 @@ class TestCodeMapAndSeed(RepoCase):
         self.assertIn("git clone failed", err)
 
 
+class TestHud(RepoCase):
+    def setUp(self):
+        super().setUp()
+        self.run_cli("init")
+        self.run_cli("add", "Pool capped at 10", "-a", "src/db/pool.py#POOL_SIZE", "-b", "plan limit", "--id", "pool")
+        self.run_cli("add", "Rounding per line", "-a", "src/billing/invoice.ts#lineTotal", "-b", "x", "--id", "round")
+        self.commit("memories")
+
+    def test_hud_shows_only_real_state(self):
+        from anchormem import hud
+        d = hud.data(self.root)
+        self.assertEqual((d["stats"]["memories"], d["stats"]["stale"], d["check"]["exit"]), (2, 0, 0))
+        self.assertTrue(all(m["ok"] for m in d["memories"]))
+        self.write("src/db/pool.py", "POOL_SIZE = 25\n")
+        d = hud.data(self.root)
+        stale = [m for m in d["memories"] if not m["ok"]]
+        self.assertEqual([m["id"] for m in stale], ["pool"])                 # only the memory whose code changed is red
+        self.assertEqual(d["focus"][0]["id"], "pool")
+        self.assertNotEqual(stale[0]["fp"], stale[0]["fp_now"])             # real stored vs current fingerprint
+        self.assertEqual(stale[0]["matrix"][1], False)                      # the "fp" column is the real check
+        self.assertEqual(d["code"]["anchor"], "src/db/pool.py#POOL_SIZE")
+        self.assertIn(["+", "POOL_SIZE = 25"], d["code"]["lines"])          # the diff of that symbol, not the whole file
+        self.assertIn(["-", "POOL_SIZE = 10"], d["code"]["lines"])
+        self.assertEqual(d["check"]["exit"], 1)
+
+    def test_hud_page_layouts_and_escaping(self):
+        from anchormem import hud
+        self.run_cli("add", "</script><b>x</b>", "-a", "README.md", "-b", "y", "--id", "evil")
+        wide, tall = hud.build(self.root), hud.build(self.root, layout="tall", live=True)
+        self.assertIn("'wide'", wide)
+        self.assertIn("'tall'", tall)
+        self.assertIn("LIVE=true", tall)
+        data = wide.split('id="hud-data">', 1)[1].split("</script>", 1)[0]
+        self.assertIn("</script><b>x</b>", [m["title"] for m in json.loads(data)["memories"]])
+        self.assertNotIn("<b>x</b>", wide)
+        out = self.root / "h.html"
+        self.assertEqual(self.run_cli("dashboard", "--hud", "--tall", "--no-open", "-o", str(out))[0], 0)
+        self.assertIn("anchormem HUD", out.read_text(encoding="utf-8"))
+
+    def test_hooks_log_what_they_deliver(self):
+        from anchormem import hud
+        self.assertEqual(hud.data(self.root)["hooks"], [])                  # nothing invented before any hook ran
+        hooks.session_start_text({"cwd": str(self.root), "session_id": "s"})
+        hooks.post_tool_text({"cwd": str(self.root), "session_id": "s", "tool_name": "Read",
+                              "tool_input": {"file_path": str(self.root / "src/db/pool.py")}})
+        ev = hooks.read_events(self.root)
+        self.assertEqual([(e["event"], e["file"], e["memories"]) for e in ev],
+                         [("SessionStart", "", 2), ("Read", "src/db/pool.py", 1)])
+        self.assertEqual(hud.data(self.root)["hooks"][1][:3], ["Read", "src/db/pool.py", 1])
+
+    def test_event_log_is_capped_and_never_raises(self):
+        for i in range(2 * hooks.MAX_EVENTS + 5):
+            hooks.log_event(self.root, "Read", f"f{i}.py", 1, 0)
+        self.assertLessEqual(len(hooks.read_events(self.root, 10_000)), 2 * hooks.MAX_EVENTS)
+        hooks.log_event(Path("/nonexistent/definitely/not/here"), "Read", "x", 0, 0)   # silently ignored
+
+    def test_live_hud_server(self):
+        httpd = dashboard.make_server(self.root, 8840, hud=True, layout="tall")
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        base = f"http://127.0.0.1:{httpd.server_address[1]}"
+        try:
+            get = lambda p: urllib.request.urlopen(base + p, timeout=10).read().decode()
+            page, v1 = get("/"), get("/version")
+            self.assertIn("LIVE=true", page)
+            self.assertEqual(get("/version"), v1)
+            self.write("src/db/pool.py", "POOL_SIZE = 99\n")
+            self.assertNotEqual(get("/version"), v1)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
+
 if __name__ == "__main__":
     unittest.main()

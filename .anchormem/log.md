@@ -27,3 +27,5 @@ Append-only record of memory changes. Newest at the bottom.
 ## [2026-11-12 21:07] confirm | promote-dry-run
 ## [2026-11-12 21:07] confirm | stdlib-only
 ## [2026-11-12 21:08] confirm | exit-codes
+## [2026-11-14 02:45] verify | handoff-claim-once | src/anchormem/hooks.py#session_start_text fp d7e6fe3eaea0 -> c4d878d92af0 @ ddf6dbc
+## [2026-11-14 02:45] add | hud-only-real-state | by agent | src/anchormem/hud.py#data
